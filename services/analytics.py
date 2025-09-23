@@ -1,9 +1,11 @@
 from __future__ import annotations
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional
+from typing import Optional
 from .db import get_db
 from numpy.polynomial.polynomial import polyfit
+import streamlit as st
+
 
 # === 基础加载 ===
 def _load_transactions(time_from: Optional[pd.Timestamp], time_to: Optional[pd.Timestamp]) -> pd.DataFrame:
@@ -43,7 +45,7 @@ def _load_inventory() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# === 通用：给交易打会员标记 & 贴上会员信息 ===
+# === 给交易打会员标记 & 合并会员信息 ===
 def attach_member_info(df_tx: pd.DataFrame, df_mem: pd.DataFrame) -> pd.DataFrame:
     df = df_tx.copy()
 
@@ -66,6 +68,9 @@ def attach_member_info(df_tx: pd.DataFrame, df_mem: pd.DataFrame) -> pd.DataFram
     df = df.drop(columns=["_cust_key"], errors="ignore")
     return df
 
+# === 其他分析函数保持不变 ===
+# member_flagged_transactions, member_frequency_stats, category_counts,
+# heatmap_pivot, top_items_for_customer, recommend_similar_categories, ...
 
 # === 1) Customer Segmentation & Personalization ===
 def member_flagged_transactions(df_tx: pd.DataFrame) -> pd.DataFrame:
@@ -597,10 +602,18 @@ def churn_signals_for_member(df_tx: pd.DataFrame) -> pd.DataFrame:
 # === 5) 库存明细表（带指定列） ===
 
 # === Facade ===
+@st.cache_data(ttl=300, show_spinner="⏳ 正在加载数据...")   # 缓存 5 分钟
 def load_all(time_from=None, time_to=None):
+    """
+    一次性从 MongoDB Atlas 拉数据，并缓存 5 分钟。
+    所有交互逻辑只在内存 DataFrame 里完成，避免频繁请求云端。
+    """
     tx = _load_transactions(time_from, time_to)
     mem = _load_members()
     inv = _load_inventory()
+
     if not tx.empty:
         tx = attach_member_info(tx, mem)
+
     return tx, mem, inv
+
