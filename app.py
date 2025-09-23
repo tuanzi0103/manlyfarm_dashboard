@@ -43,7 +43,7 @@ if range_choice != "All":
 # Import Excel → MongoDB
 uploaded_files = st.sidebar.file_uploader(
     "Upload Excel file and import to database",
-    type=["xlsx"],
+    type=["xlsx", "csv"],
     accept_multiple_files=True
 )
 enable_fake = st.sidebar.checkbox("Use Faker to complete (FirstName/Surname/Email/Phone)", value=False)
@@ -52,9 +52,11 @@ if uploaded_files:
     for f in uploaded_files:
         try:
             collection_name, inserted_df = ingest_excel(f, enable_fake=enable_fake)
-            st.sidebar.success(f"{collection_name} data {f.name} Import successfully to MongoDB ✅ ({len(inserted_df)} lines)")
+            st.sidebar.success(
+                f"{collection_name} data {f.name} imported successfully ✅ ({len(inserted_df)} rows)"
+            )
         except Exception as e:
-            st.sidebar.error(f"{f.name} Import Failed ❌: {e}")
+            st.sidebar.error(f"{f.name} import failed ❌: {e}")
 
 # Add stocking unit
 st.sidebar.subheader("📏 Add Stocking Unit")
@@ -79,7 +81,7 @@ if st.sidebar.button("Clear Database"):
 # ===================
 st.title("📊 Manly Farm Dashboard")
 
-# Load data (based on time range)
+# Load data (based on time range, cached)
 tx, mem, inv = load_all(time_from, time_to)
 
 if section == "Customer Segmentation & Personalization":
