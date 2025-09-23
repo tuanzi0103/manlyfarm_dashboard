@@ -4,3 +4,4 @@ pandas
 altair
 plotly
 openpyxl
+Faker
