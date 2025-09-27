@@ -5,3 +5,4 @@ altair
 plotly
 openpyxl
 Faker
+statsmodels
