@@ -104,6 +104,18 @@ def member_flagged_transactions(df_tx: pd.DataFrame) -> pd.DataFrame:
 def member_frequency_stats(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "Customer ID" not in df.columns:
         return pd.DataFrame()
+
+    df = df.copy()
+
+    # ✅ 兜底：没有 "Product Sales" 就用 "Net Sales"
+    if "Product Sales" not in df.columns and "Net Sales" in df.columns:
+        df["Product Sales"] = df["Net Sales"]
+
+    # ✅ 金额列统一为数值，避免类型问题
+    for col in ["Product Sales", "Discounts", "Net Sales", "Gross Sales"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
     g = df.groupby("Customer ID").agg(
         visits=("Datetime", "count"),
         last_visit=("Datetime", "max"),
@@ -112,10 +124,14 @@ def member_frequency_stats(df: pd.DataFrame) -> pd.DataFrame:
         net_sales=("Net Sales", "sum"),
         gross_sales=("Gross Sales", "sum")
     ).reset_index()
+
+    # 保留首个非空的会员信息列
     for col in ["First Name", "Surname", "Email", "Phone"]:
         if col in df.columns:
             g[col] = df.groupby("Customer ID")[col].agg(lambda x: x.dropna().iloc[0] if x.dropna().any() else np.nan).values
+
     return g.sort_values("visits", ascending=False)
+
 
 def non_member_overview(df: pd.DataFrame) -> pd.Series:
     s = pd.Series(dtype=float)
