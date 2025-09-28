@@ -1,6 +1,0 @@
-streamlit
-pymongo[srv]>=4.6
-pandas
-altair
-plotly
-openpyxl
