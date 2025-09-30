@@ -4,4 +4,8 @@ pandas
 altair
 plotly
 openpyxl
-statsmodels==0.14.2
+xlrd
+numpy
+scikit-learn
+statsmodels
+faker
