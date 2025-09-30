@@ -1,107 +1,100 @@
 import streamlit as st
 import pandas as pd
-import re
-
 from services.analytics import load_all
 from services.db import get_db
 from services.ingestion import ingest_excel, ingest_csv
 from charts.high_level import show_high_level
+# 其他模块
 from charts.sales_report import show_sales_report
 from charts.inventory import show_inventory
 from charts.product_mix_only import show_product_mix_only
 from charts.customer_segmentation import show_customer_segmentation
 
+st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
+st.title("📊 Manly Farm Dashboard")
 
-# === 数据库加载（缓存，可刷新） ===
-@st.cache_data(show_spinner=False)
-def load_db_cached():
-    """加载数据库里的所有数据"""
-    return load_all(None, None, get_db())
+# ✅ 缓存数据库加载
+@st.cache_data(show_spinner="loading...")
+def load_db_cached(days=365):
+    db = get_db()
+    return load_all(days=days, db=db)
 
+# === 数据加载 ===
+tx, mem, inv = load_db_cached()
 
-# =============== Sidebar ===============
-st.sidebar.header("⚙️ Dashboard")
+# === Sidebar 功能 ===
+st.sidebar.header("⚙️ Settings")
 
-# Section 切换
-section = st.sidebar.radio(
-    "Choose Analysis Perspectives",
-    [
-        "Section 1: High Level report",
-        "Section 2: Sales report by category",
-        "Section 3: Inventory",
-        "Section 4: product mix",
-        "Section 5: Customers insights",
-    ],
-    index=0
-)
-
-# === 上传功能（永远显示） ===
+# 文件上传（CSV / Excel）
 uploaded_files = st.sidebar.file_uploader(
-    "📂 Upload data file (CSV/Excel)",
-    type=["xlsx", "csv"],
+    "Upload files",
+    type=["csv", "xlsx"],
     accept_multiple_files=True
 )
 
-tx, mem, inv = load_db_cached()  # 默认加载历史数据
-
 if uploaded_files:
+    db = get_db()
     for f in uploaded_files:
-        with st.spinner(f"Processing {f.name}..."):
-            if f.name.lower().endswith(".xlsx"):
-                ingest_excel(f)
-            elif f.name.lower().endswith(".csv"):
-                ingest_csv(f)
-        st.sidebar.success(f"{f.name} imported ✅")
+        if f.name.lower().endswith(".xlsx"):
+            ingest_excel(f)
+        elif f.name.lower().endswith(".csv"):
+            ingest_csv(f)
+    st.sidebar.success("✅ Files ingested successfully.")
+    load_db_cached.clear()   # 清理缓存，下次刷新自动重算
 
-    # 🔄 清缓存并重新加载数据库
-    st.cache_data.clear()
-    tx, mem, inv = load_all(None, None, get_db())
-    st.sidebar.success("✅ Data uploaded and dashboard refreshed with new data")
-
-# === Add Unit 功能 ===
-st.sidebar.subheader("➕ Add New Unit")
-new_unit = st.sidebar.text_input("Enter new unit name")
-if st.sidebar.button("Add Unit"):
-    if new_unit:
-        db = get_db()
-        db.inventory.insert_one({"Unit": new_unit})
-        st.sidebar.success(f"✅ Unit '{new_unit}' added successfully")
-        st.cache_data.clear()
-        tx, mem, inv = load_all(None, None, get_db())  # 立刻刷新
-    else:
-        st.sidebar.error("⚠️ Please enter a unit name before adding")
-
-# === 清空数据库按钮 ===
-if st.sidebar.button("Clear Database"):
+# === 清空数据库 ===
+if st.sidebar.button("🗑️ Clear Database"):
     db = get_db()
     db.transactions.delete_many({})
-    db.members.delete_many({})
     db.inventory.delete_many({})
-    st.sidebar.warning("All data cleared ❌")
-    st.session_state["uploaded_history"] = set()
-    st.cache_data.clear()
-    tx, mem, inv = None, None, None
+    db.members.delete_many({})
+    db.summary_daily.delete_many({})
+    db.summary_category.delete_many({})
+    st.sidebar.success("✅ Database cleared!")
+    load_db_cached.clear()
 
+# === 单位选择 ===
+st.sidebar.subheader("📏 Units")
 
-# =============== Main ===============
-st.title("📊 Manly Farm Dashboard")
-
-if (tx is not None and not tx.empty) or (mem is not None and not mem.empty) or (inv is not None and not inv.empty):
-
-    if section == "Section 1: High Level report":
-        show_high_level(tx, mem, inv)
-
-    elif section == "Section 2: Sales report by category":
-        show_sales_report(tx, inv)
-
-    elif section == "Section 3: Inventory":
-        show_inventory(tx, inv)
-
-    elif section == "Section 4: product mix":
-        show_product_mix_only(tx)
-
-    elif section == "Section 5: Customers insights":
-        show_customer_segmentation(tx, mem)
-
+if inv is not None and not inv.empty and "Unit" in inv.columns:
+    units_available = sorted(inv["Unit"].dropna().unique().tolist())
 else:
-    st.info("📂 No historical data found in database. Please upload CSV/Excel files from sidebar.")
+    units_available = ["Gram 1.000", "Kilogram 1.000", "Milligram 1.000"]
+
+db = get_db()
+db_units = [u["name"] for u in db.units.find({}, {"_id": 0, "name": 1})]
+
+all_units = sorted(list(set(units_available + db_units)))
+unit = st.sidebar.selectbox("Choose unit", all_units)
+
+new_unit = st.sidebar.text_input("Add new unit")
+if st.sidebar.button("➕ Add Unit"):
+    if new_unit and new_unit not in all_units:
+        db.units.insert_one({"name": new_unit})
+        st.sidebar.success(f"✅ Added new unit: {new_unit}")
+        st.experimental_rerun()
+
+# === Section 选择 ===
+section = st.sidebar.radio("📂 Sections", [
+    "Section 1: High Level report",
+    "Section 2: Sales report by category",
+    "Section 3: Inventory",
+    "Section 4: product mix",
+    "Section 5: Customers insights"
+])
+
+# === 主体展示 ===
+if section == "Section 1: High Level report":
+    show_high_level(tx, mem, inv)
+
+elif section == "Section 2: Sales report by category":
+    show_sales_report(tx, inv)
+
+elif section == "Section 3: Inventory":
+    show_inventory(tx, inv)
+
+elif section == "Section 4: product mix":
+    show_product_mix_only(tx)
+
+elif section == "Section 5: Customers insights":
+    show_customer_segmentation(tx, mem)
