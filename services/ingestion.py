@@ -1,100 +1,61 @@
 import pandas as pd
-from io import BytesIO
-from faker import Faker
-import re
-import datetime
-from .db import get_db
-
-fake = Faker()
 import streamlit as st
+from services.db import get_db
+from services.analytics import daily_summary_mongo, category_summary_mongo
 
-# === 类型识别 ===
+# ========== 帮助函数 ==========
+
 def _is_transaction_sheet(df: pd.DataFrame) -> bool:
     cols = set(df.columns.str.lower())
-    has_time = {"date", "time"} <= cols or "datetime" in cols
-    has_item_qty = ("item" in cols or "sku" in cols) and ("qty" in cols or "quantity" in cols)
-    has_sales_cols = any(c in cols for c in ["net sales", "gross sales", "discounts", "product sales"])
-    return (has_time and has_item_qty) or has_sales_cols
+    return ("date" in cols or "datetime" in cols) and ("net sales" in cols)
+
+def _is_member_sheet(df: pd.DataFrame) -> bool:
+    cols = set(df.columns.str.lower())
+    return ("customer id" in cols or "square customer id" in cols)
 
 def _is_inventory_sheet(df: pd.DataFrame) -> bool:
     cols = set(df.columns.str.lower())
     return ("sku" in cols) and (
-        ("stock on hand" in cols)
-        or ("stock-by equivalent" in cols)
+        ("current quantity vie market & bar" in cols)
+        or ("stock on hand" in cols)
         or any(c.startswith("current quantity") for c in cols)
     )
 
-def _is_member_sheet(df: pd.DataFrame, sheet_name: str = "") -> bool:
-    cols = set(df.columns.str.lower())
-    col_match = ("customer id" in cols) or ({"first name", "surname", "email", "phone"} <= cols)
-    return col_match or "member" in sheet_name.lower()
-
-def _read_sheet_with_header_fallback(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
-    df0 = pd.read_excel(xls, sheet_name=sheet_name, header=0)
-    cols0 = pd.Index(df0.columns)
-    if (cols0.astype(str).str.startswith("Unnamed").mean() > 0.6) or cols0.isnull().any():
-        df1 = pd.read_excel(xls, sheet_name=sheet_name, header=1)
-        return df1
-    return df0
-
-# === 预处理函数 ===
-def preprocess_transactions(df: pd.DataFrame, enable_fake: bool) -> pd.DataFrame:
-    from services.analytics import _to_numeric
-
+def preprocess_transaction(df: pd.DataFrame) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+    # 合并 Date + Time → Datetime
     if "Date" in df.columns and "Time" in df.columns:
-        df["Time"] = df["Time"].apply(
-            lambda x: x.strftime("%H:%M:%S") if isinstance(x, datetime.time) else str(x)
-        )
-        df["Datetime"] = pd.to_datetime(
-            df["Date"].astype(str) + " " + df["Time"].astype(str),
-            errors="coerce",
-        )
+        df["Datetime"] = pd.to_datetime(df["Date"].astype(str) + " " + df["Time"].astype(str), errors="coerce")
     elif "Datetime" in df.columns:
         df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
-    if "Qty" not in df.columns and "Quantity" in df.columns:
-        df = df.rename(columns={"Quantity": "Qty"})
-    if "Item" in df.columns:
-        df["Item"] = df["Item"].astype(str).str.strip()
-    elif "Item Name" in df.columns:
-        df = df.rename(columns={"Item Name": "Item"})
-
-    # 转换数值
-    for col in ["Net Sales", "Gross Sales", "Qty"]:
-        if col in df.columns:
-            df[col] = _to_numeric(df[col])
-
-    # ✅ 去重
+    # 去重
     df = df.drop_duplicates()
     return df
 
-
-def preprocess_inventory(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
-    # ✅ 去重
-    df = df.drop_duplicates()
-    return df
-
-
-def preprocess_members(df: pd.DataFrame, enable_fake: bool) -> pd.DataFrame:
+def preprocess_member(df: pd.DataFrame) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
     if "Square Customer ID" in df.columns and "Customer ID" not in df.columns:
         df = df.rename(columns={"Square Customer ID": "Customer ID"})
-    # ✅ 去重
     df = df.drop_duplicates()
     return df
 
-# === Mongo 写入（批量） ===
-BATCH_SIZE = 5000
+def preprocess_inventory(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
 
-def _insert_many_safe(col, docs):
-    """分批批量写入（不检测重复，直接插入）"""
-    if not docs:
-        return
-    for i in range(0, len(docs), BATCH_SIZE):
-        col.insert_many(docs[i:i+BATCH_SIZE], ordered=False)
+    # ✅ 兼容库存不同叫法
+    if "Stock on Hand" in df.columns and "Current Quantity Vie Market & Bar" not in df.columns:
+        df = df.rename(columns={"Stock on Hand": "Current Quantity Vie Market & Bar"})
 
-# === CSV 导入 ===
+    for col in df.columns:
+        if col.lower().startswith("current quantity") and col != "Current Quantity Vie Market & Bar":
+            df = df.rename(columns={col: "Current Quantity Vie Market & Bar"})
+            break
+
+    df = df.drop_duplicates()
+    return df
+
+# ========== 主导入函数 ==========
+
 def ingest_csv(uploaded_file, enable_fake=False):
     db = get_db()
     filename = uploaded_file.name.lower() if hasattr(uploaded_file, "name") else str(uploaded_file)
@@ -105,77 +66,74 @@ def ingest_csv(uploaded_file, enable_fake=False):
         results = {}
 
         if _is_transaction_sheet(df):
-            df2 = preprocess_transactions(df, enable_fake)
-            needed_cols = ["Datetime", "Item", "Category", "Net Sales", "Gross Sales", "Qty", "Customer ID"]
-            df2 = df2[[c for c in needed_cols if c in df2.columns]]
-            _insert_many_safe(db.transactions, df2.to_dict("records"))
-            results["transactions"] = df2
-
-        elif _is_inventory_sheet(df):
-            df2 = preprocess_inventory(df)
-            needed_cols = ["SKU", "Item", "Qty", "Net Sales", "Current Quantity Vie Market & Bar"]
-            df2 = df2[[c for c in needed_cols if c in df2.columns]]
-            _insert_many_safe(db.inventory, df2.to_dict("records"))
-            results["inventory"] = df2
+            df = preprocess_transaction(df)
+            if not df.empty:
+                db.transactions.insert_many(df.to_dict("records"))
+                results["transactions"] = len(df)
 
         elif _is_member_sheet(df):
-            df2 = preprocess_members(df, enable_fake)
-            needed_cols = ["Customer ID", "First Name", "Surname", "Email", "Phone"]
-            df2 = df2[[c for c in needed_cols if c in df2.columns]]
-            _insert_many_safe(db.members, df2.to_dict("records"))
-            results["members"] = df2
+            df = preprocess_member(df)
+            if not df.empty:
+                db.members.insert_many(df.to_dict("records"))
+                results["members"] = len(df)
 
-        else:
-            results["unknown"] = df
+        elif _is_inventory_sheet(df):
+            df = preprocess_inventory(df)
+            if not df.empty:
+                db.inventory.insert_many(df.to_dict("records"))
+                results["inventory"] = len(df)
 
         st.sidebar.success(f"✅ {filename} imported ({len(df)} rows)")
+
+        # ✅ 刷新 summary
+        daily_summary_mongo(db, refresh=True)
+        category_summary_mongo(db, refresh=True)
+
         return results
 
     except Exception as e:
-        st.sidebar.error(f"❌ {filename} import failed: {e}")
+        st.sidebar.error(f"❌ Error importing {filename}: {e}")
         return {}
 
-# === Excel 导入 ===
-def ingest_excel(uploaded_file, enable_fake=False):
+
+def ingest_excel(uploaded_file):
     db = get_db()
     filename = uploaded_file.name.lower() if hasattr(uploaded_file, "name") else str(uploaded_file)
     st.sidebar.info(f"📂 Importing Excel: {filename}")
 
     try:
-        xls = pd.ExcelFile(BytesIO(uploaded_file.read()))
+        xls = pd.ExcelFile(uploaded_file)
         results = {}
 
         for sheet in xls.sheet_names:
-            df_raw = _read_sheet_with_header_fallback(xls, sheet_name=sheet)
-            df = df_raw.loc[:, ~df_raw.columns.str.contains("^Unnamed")]
+            df = pd.read_excel(xls, sheet_name=sheet)
 
             if _is_transaction_sheet(df):
-                df2 = preprocess_transactions(df, enable_fake)
-                needed_cols = ["Datetime", "Item", "Category", "Net Sales", "Gross Sales", "Qty", "Customer ID"]
-                df2 = df2[[c for c in needed_cols if c in df2.columns]]
-                _insert_many_safe(db.transactions, df2.to_dict("records"))
-                results["transactions"] = results.get("transactions", pd.DataFrame()).append(df2, ignore_index=True)
-                continue
+                df = preprocess_transaction(df)
+                if not df.empty:
+                    db.transactions.insert_many(df.to_dict("records"))
+                    results["transactions"] = len(df)
 
-            if _is_inventory_sheet(df):
-                df2 = preprocess_inventory(df)
-                needed_cols = ["SKU", "Item", "Qty", "Net Sales", "Current Quantity Vie Market & Bar"]
-                df2 = df2[[c for c in needed_cols if c in df2.columns]]
-                _insert_many_safe(db.inventory, df2.to_dict("records"))
-                results["inventory"] = results.get("inventory", pd.DataFrame()).append(df2, ignore_index=True)
-                continue
+            elif _is_member_sheet(df):
+                df = preprocess_member(df)
+                if not df.empty:
+                    db.members.insert_many(df.to_dict("records"))
+                    results["members"] = len(df)
 
-            if _is_member_sheet(df, sheet_name=sheet):
-                df2 = preprocess_members(df, enable_fake)
-                needed_cols = ["Customer ID", "First Name", "Surname", "Email", "Phone"]
-                df2 = df2[[c for c in needed_cols if c in df2.columns]]
-                _insert_many_safe(db.members, df2.to_dict("records"))
-                results["members"] = results.get("members", pd.DataFrame()).append(df2, ignore_index=True)
-                continue
+            elif _is_inventory_sheet(df):
+                df = preprocess_inventory(df)
+                if not df.empty:
+                    db.inventory.insert_many(df.to_dict("records"))
+                    results["inventory"] = len(df)
 
-        st.sidebar.success(f"✅ {filename} imported")
+        st.sidebar.success(f"✅ {filename} imported ({sum(results.values())} rows)")
+
+        # ✅ 刷新 summary
+        daily_summary_mongo(db, refresh=True)
+        category_summary_mongo(db, refresh=True)
+
         return results
 
     except Exception as e:
-        st.sidebar.error(f"❌ {filename} import failed: {e}")
+        st.sidebar.error(f"❌ Error importing {filename}: {e}")
         return {}

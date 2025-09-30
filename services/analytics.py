@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from datetime import timedelta
+import pandas as pd
+from services.db import get_db
 
 # === 工具函数 ===
 def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -23,13 +25,119 @@ def _to_numeric(series: pd.Series) -> pd.Series:
     )
 
 # === 数据加载 ===
-def load_transactions(db) -> pd.DataFrame:
-    df = pd.DataFrame(list(db.transactions.find()))
-    df = _clean_df(df)
-    for col in ["Net Sales", "Gross Sales", "Qty"]:
-        if col in df.columns:
-            df[col] = _to_numeric(df[col])
+def load_transactions(db, days=365):
+    """优化版: 只加载必要字段 + 限制时间范围 (默认一年)"""
+    today = pd.Timestamp.today()
+    start = today - pd.Timedelta(days=days)
+    cursor = db.transactions.find(
+        {"Datetime": {"$gte": start}},
+        {"Datetime": 1, "Category": 1, "Net Sales": 1, "Gross Sales": 1, "Qty": 1}
+    )
+    df = pd.DataFrame(list(cursor))
+    if not df.empty and "Datetime" in df.columns:
+        df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
     return df
+
+def daily_summary_mongo(db, days=365, refresh=False):
+    """每日汇总: 优先读 summary_daily 集合"""
+    today = pd.Timestamp.today()
+    start = today - pd.Timedelta(days=days)
+
+    if not refresh:
+        docs = list(db.summary_daily.find({"date": {"$gte": start.strftime("%Y-%m-%d")}}))
+        if docs:
+            return pd.DataFrame(docs)
+
+    # === 重新聚合 ===
+    pipeline = [
+        {"$match": {"Datetime": {"$gte": start}}},
+        {"$project": {
+            "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$Datetime"}},
+            "Net Sales": 1, "Gross Sales": 1, "Qty": 1
+        }},
+        {"$group": {
+            "_id": "$date",
+            "net_sales": {"$sum": "$Net Sales"},
+            "transactions": {"$sum": 1},
+            "avg_txn": {"$avg": "$Net Sales"},
+            "gross": {"$sum": "$Gross Sales"},
+            "qty": {"$sum": "$Qty"},
+        }},
+        {"$project": {
+            "date": "$_id",
+            "net_sales": 1,
+            "transactions": 1,
+            "avg_txn": 1,
+            "gross": 1,
+            "qty": 1,
+            "_id": 0
+        }},
+        {"$sort": {"date": 1}}
+    ]
+    result = list(db.transactions.aggregate(pipeline))
+    if not result:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(result)
+    df["date"] = pd.to_datetime(df["date"])
+
+    # === 存回 summary_daily ===
+    db.summary_daily.delete_many({"date": {"$gte": start.strftime("%Y-%m-%d")}})
+    db.summary_daily.insert_many(df.to_dict("records"))
+
+    return df
+
+
+def category_summary_mongo(db, days=365, refresh=False):
+    """分类汇总: 优先读 summary_category 集合"""
+    today = pd.Timestamp.today()
+    start = today - pd.Timedelta(days=days)
+
+    if not refresh:
+        docs = list(db.summary_category.find({"date": {"$gte": start.strftime("%Y-%m-%d")}}))
+        if docs:
+            return pd.DataFrame(docs)
+
+    pipeline = [
+        {"$match": {"Datetime": {"$gte": start}}},
+        {"$project": {
+            "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$Datetime"}},
+            "Category": 1, "Net Sales": 1, "Gross Sales": 1, "Qty": 1
+        }},
+        {"$group": {
+            "_id": {"date": "$date", "Category": "$Category"},
+            "net_sales": {"$sum": "$Net Sales"},
+            "transactions": {"$sum": 1},
+            "avg_txn": {"$avg": "$Net Sales"},
+            "gross": {"$sum": "$Gross Sales"},
+            "qty": {"$sum": "$Qty"},
+        }},
+        {"$project": {
+            "date": "$_id.date",
+            "Category": "$_id.Category",
+            "net_sales": 1,
+            "transactions": 1,
+            "avg_txn": 1,
+            "gross": 1,
+            "qty": 1,
+            "_id": 0
+        }},
+        {"$sort": {"date": 1}}
+    ]
+    result = list(db.transactions.aggregate(pipeline))
+    if not result:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(result)
+    df["date"] = pd.to_datetime(df["date"])
+
+    # === 存回 summary_category ===
+    db.summary_category.delete_many({"date": {"$gte": start.strftime("%Y-%m-%d")}})
+    db.summary_category.insert_many(df.to_dict("records"))
+
+    return df
+
+
 
 def load_members(db) -> pd.DataFrame:
     df = pd.DataFrame(list(db.members.find()))
@@ -43,27 +151,55 @@ def load_inventory(db) -> pd.DataFrame:
             df[col] = _to_numeric(df[col])
     return df
 
-def load_all(time_from=None, time_to=None, db=None):
-    """
-    一次性加载交易 / 会员 / 库存
-    兼容旧调用方式 load_all(time_from, time_to)
-    也支持新方式 load_all(db=db)
-    """
+def load_all(days=365, db=None):
+    """从 MongoDB 加载数据（带 projection，不同集合只取关键列）"""
     if db is None:
-        from services.ingestion import get_db
         db = get_db()
 
-    tx = load_transactions(db)
-    mem = load_members(db)
-    inv = load_inventory(db)
+    start = pd.Timestamp.today() - pd.Timedelta(days=days)
 
-    if time_from and time_to and "Datetime" in tx.columns:
-        tx = tx[
-            (pd.to_datetime(tx["Datetime"]) >= pd.to_datetime(time_from)) &
-            (pd.to_datetime(tx["Datetime"]) <= pd.to_datetime(time_to))
-        ]
+    # === Transaction 表需要的列（High Level, KPI, Trend） ===
+    projection_tx = {
+        "Datetime": 1, "Category": 1,
+        "Net Sales": 1, "Gross Sales": 1,
+        "Qty": 1, "Member ID": 1,
+        "Discount": 1,  # Pricing & Promotion
+        "_id": 0
+    }
+
+    # === Members 表需要的列（Customer Segmentation, Retention） ===
+    projection_mem = {
+        "First Name": 1, "Surname": 1,
+        "Email": 1, "Member ID": 1,
+        "Join Date": 1, "Last Purchase": 1,
+        "_id": 0
+    }
+
+    # === Inventory 表需要的列（Inventory, Pricing, Velocity） ===
+    projection_inv = {
+        "Item Name": 1, "Item Variation Name": 1,
+        "SKU": 1, "GTIN": 1,
+        "Current Quantity Vie Market & Bar": 1,
+        "Cost": 1, "Retail Price": 1,
+        "Tax - GST (10%)": 1,
+        "_id": 0
+    }
+
+    # === Mongo 查询 ===
+    tx = pd.DataFrame(list(db.transactions.find(
+        {"Datetime": {"$gte": start}},
+        projection_tx
+    )))
+
+    mem = pd.DataFrame(list(db.members.find({}, projection_mem)))
+    inv = pd.DataFrame(list(db.inventory.find({}, projection_inv)))
+
+    # === 日期字段转换 ===
+    if not tx.empty and "Datetime" in tx:
+        tx["Datetime"] = pd.to_datetime(tx["Datetime"])
 
     return tx, mem, inv
+
 
 # === 日报表 ===
 def daily_summary(transactions: pd.DataFrame) -> pd.DataFrame:
