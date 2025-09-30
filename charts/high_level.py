@@ -1,167 +1,178 @@
 import streamlit as st
-import plotly.express as px
 import pandas as pd
-from services.simulator import simulate_transactions
+import plotly.express as px
+
 
 def persisting_multiselect(label, options, key, default=None):
     if key not in st.session_state:
         st.session_state[key] = default or []
     return st.multiselect(label, options=options, default=st.session_state[key], key=key)
 
+
 def _safe_sum(df, col):
     if df is None or df.empty or col not in df.columns:
         return 0.0
     return float(pd.to_numeric(df.get(col), errors="coerce").fillna(0).sum())
 
-# === 缓存聚合逻辑 ===
-@st.cache_data(show_spinner=False)
-def compute_trend(tx: pd.DataFrame, total_inv: float):
-    trend = tx.copy()
-    trend["date"] = trend["Datetime"].dt.floor("D")
-    trend_stats = trend.groupby("date").agg(
-        net_sales=("Net Sales", "sum"),
-        transactions=("Datetime", "count"),
-        avg_txn=("Net Sales", "mean"),
-        gross=("Gross Sales", "sum")
-    ).reset_index()
-    trend_stats["profit"] = trend_stats["gross"] - trend_stats["net_sales"]
-    trend_stats["inventory_value"] = total_inv
-    return trend_stats
-
-@st.cache_data(show_spinner=False)
-def compute_daily_grouped(df: pd.DataFrame):
-    df = df.copy()
-    df["date"] = df["Datetime"].dt.floor("D")
-    return df.groupby(["date", "category_clean"], as_index=False).agg(
-        net_sales=("Net Sales", "sum")
-    )
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
-    st.header("🏁 High Level Report")
+    st.header("📊 High Level Report")
 
-    # ===== 时间范围 =====
-    st.subheader("⏱ Time Range")
-    option = st.selectbox("Select range", ["All", "Custom", "WTD", "MTD", "YTD"], key="time_range")
-    today = pd.Timestamp.today().normalize()
-
-    # ===== Data Simulation =====
-    st.subheader("🧪 Data Simulation")
-    option_sim = st.selectbox("Synthetic data period", ["1M", "3M", "6M", "9M"], key="sim_option")
-    col1, col2 = st.columns(2)
-    if col1.button("Generate Data"):
-        months = int(option_sim.replace("M", ""))
-        st.session_state["simulated_tx"] = simulate_transactions(pd.DataFrame(), months=months)
-    if col2.button("❌ Clear Data"):
-        if "simulated_tx" in st.session_state:
-            del st.session_state["simulated_tx"]
-
-    # 使用模拟数据（如果有）
-    if "simulated_tx" in st.session_state:
-        tx = st.session_state["simulated_tx"]
-
-    # ===== 如果还是没数据，显示默认提示并停止 =====
-    if tx is None or tx.empty:
-        st.warning("No transaction data available. Use 'Generate Data' above to create synthetic transactions.")
-        persisting_multiselect("Choose categories", ["retail", "bar", "other"],
-                               key="hl_cats", default=["retail", "bar", "other"])
+    if tx.empty:
+        st.warning("No transaction data available. Please upload data first.")
         return
 
-    # ===== 应用时间范围过滤 =====
-    if option == "Custom":
-        time_from = st.date_input("From")
-        time_to = st.date_input("To")
-        if time_from and time_to:
-            tx = tx[(tx["Datetime"].dt.date >= time_from) & (tx["Datetime"].dt.date <= time_to)]
-    elif option == "WTD":
-        monday = today - pd.Timedelta(days=today.weekday())
-        tx = tx[tx["Datetime"].dt.date >= monday.date()]
-    elif option == "MTD":
-        first_day = today.replace(day=1)
-        tx = tx[tx["Datetime"].dt.date >= first_day.date()]
-    elif option == "YTD":
-        first_day = today.replace(month=1, day=1)
-        tx = tx[tx["Datetime"].dt.date >= first_day.date()]
+    today = pd.Timestamp.today().normalize()
+    tx["date"] = pd.to_datetime(tx["Datetime"]).dt.normalize()
 
-    # ===== 顶部 KPI (两行显示) =====
-    k1, k2, k3, k4 = st.columns(4)
-    k5, k6, k7, k8 = st.columns(4)
+    # === 顶部 KPI ===
+    latest_date = tx["date"].max()
+    df_latest = tx[tx["date"] == latest_date]
 
-    k1.metric("Daily Net Sales", f"{_safe_sum(tx, 'Net Sales'):.2f}")
-    k2.metric("Daily Transactions", len(tx))
-    avg_txn = _safe_sum(tx, "Net Sales") / max(len(tx), 1)
-    k3.metric("Avg Transaction", f"{avg_txn:.2f}")
+    kpis = {
+        "Daily Net Sales": df_latest["Net Sales"].sum(),
+        "Daily Transactions": len(df_latest),
+        "Avg Transaction": df_latest["Net Sales"].mean(),
+        "3M Avg": tx.groupby("date")["Net Sales"].sum().rolling(90, min_periods=1).mean().iloc[-1],
+        "6M Avg": tx.groupby("date")["Net Sales"].sum().rolling(180, min_periods=1).mean().iloc[-1],
+        "Inventory Value": _safe_sum(inv, "Current Quantity Vie Market & Bar"),
+        "Profit (Amount)": df_latest["Gross Sales"].sum() - df_latest["Net Sales"].sum(),
+        "Items Sold": df_latest["Qty"].sum() if "Qty" in df_latest.columns else 0,
+    }
 
-    daily = tx.copy()
-    daily["date"] = daily["Datetime"].dt.floor("D")
-    daily_sum = daily.groupby("date", as_index=False)["Net Sales"].sum().sort_values("date")
-    daily_sum["3M_Rolling"] = daily_sum["Net Sales"].rolling(90, min_periods=1).mean()
-    daily_sum["6M_Rolling"] = daily_sum["Net Sales"].rolling(180, min_periods=1).mean()
+    # ✅ KPI 日期格式化
+    st.markdown(f"### 📅 Latest available date: {latest_date.strftime('%Y-%m-%d')}")
 
-    k4.metric("3M Avg", f"{daily_sum['3M_Rolling'].iloc[-1]:.2f}" if not daily_sum.empty else "N/A")
-    k5.metric("6M Avg", f"{daily_sum['6M_Rolling'].iloc[-1]:.2f}" if not daily_sum.empty else "N/A")
+    labels = list(kpis.keys())
+    values = list(kpis.values())
+    for row in range(0, len(labels), 4):
+        cols = st.columns(4)
+        for i, col in enumerate(cols):
+            idx = row + i
+            if idx < len(labels):
+                label = labels[idx]
+                value = values[idx]
+                display = "-" if pd.isna(value) else f"{value:,.2f}"
+                with col:
+                    st.markdown(
+                        f"<div style='font-size:28px; font-weight:600'>{display}</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.caption(label)
 
-    total_inv = _safe_sum(inv, "Current Quantity Vie Market & Bar") if inv is not None else 0
-    k6.metric("Inventory Value", f"{total_inv:.2f}")
+    st.markdown("---")
 
-    profit = _safe_sum(tx, "Gross Sales") - _safe_sum(tx, "Net Sales")
-    k7.metric("Profit (Amount)", f"{profit:.2f}")
+    # === 三个多选框 ===
+    st.subheader("🔍 Select Parameters")
 
-    k8.metric("Items Sold", f"{_safe_sum(tx, 'Qty'):.0f}")
+    time_range = persisting_multiselect("Choose time range", ["Custom dates", "WTD", "MTD", "YTD"], key="hl_time")
+    data_options = [
+        "Daily Net Sales", "Daily Transactions", "Avg Transaction",
+        "3M Avg", "6M Avg",
+        "Inventory Value", "Profit (Amount)", "Items Sold"
+    ]
+    data_sel = persisting_multiselect("Choose data type", data_options, key="hl_data")
 
-    # ===== 分类多选折线图 =====
-    st.subheader("📈 Daily Net Sales by Location/Category")
+    all_cats = sorted(tx["Category"].fillna("Unknown").unique().tolist())
+    bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
+    cats_sel = persisting_multiselect("Choose categories", all_cats + ["bar", "retail"], key="hl_cats")
 
-    if "location" in tx.columns:
-        tx["category_clean"] = tx["location"].fillna("other").astype(str)
-        tx.loc[tx["category_clean"].str.contains("bar", case=False, na=False), "category_clean"] = "bar"
-        tx.loc[tx["category_clean"].str.contains("retail", case=False, na=False), "category_clean"] = "retail"
-        mask_known = tx["category_clean"].isin(["bar", "retail"])
-        tx.loc[~mask_known, "category_clean"] = "other"
-    elif "Category" in tx.columns:
-        tx["category_clean"] = tx["Category"].fillna("other").astype(str)
-    else:
-        tx["category_clean"] = "other"
+    if time_range and data_sel and cats_sel:
+        df = tx.copy()
+        df["date"] = pd.to_datetime(df["Datetime"]).dt.normalize()
 
-    cats = sorted(tx["category_clean"].unique().tolist())
-    for d in ["retail", "bar", "other"]:
-        if d not in cats:
-            cats.append(d)
+        # === 时间过滤（往前推） ===
+        if "WTD" in time_range:
+            start = today - pd.Timedelta(days=7)
+            df = df[df["date"] >= start]
 
-    sel = persisting_multiselect("Choose categories", cats, key="hl_cats", default=["retail", "bar", "other"])
+        if "MTD" in time_range:
+            start = today - pd.Timedelta(days=30)
+            df = df[df["date"] >= start]
 
-    df = tx.copy()
-    df["date"] = df["Datetime"].dt.floor("D")
-    if sel:
-        df = df[df["category_clean"].astype(str).isin(sel)]
+        if "YTD" in time_range:
+            start = today - pd.Timedelta(days=365)
+            df = df[df["date"] >= start]
 
-    daily_grouped = compute_daily_grouped(df)  # ✅ 缓存
-    if not daily_grouped.empty:
-        fig = px.line(
-            daily_grouped,
-            x="date",
-            y="net_sales",
-            color="category_clean",
-            title="Daily Net Sales (multi-select)",
-            markers=True,
+        if "Custom dates" in time_range:
+            t1 = st.date_input("From")
+            t2 = st.date_input("To")
+            if t1 and t2:
+                df = df[(df["date"] >= pd.Timestamp(t1)) & (df["date"] <= pd.Timestamp(t2))]
+
+        # === bar/retail 分组 ===
+        df["cat_group"] = df["Category"].fillna("Unknown")
+        df_bar = df[df["Category"].isin(bar_cats)].copy()
+        df_bar["cat_group"] = "bar"
+        df_retail = df[~df["Category"].isin(bar_cats)].copy()
+        df_retail["cat_group"] = "retail"
+        df = pd.concat([df, df_bar, df_retail], ignore_index=True)
+
+        # === 聚合 ===
+        grouped = df.groupby(["date", "cat_group"]).agg(
+            net_sales=("Net Sales", "sum"),
+            transactions=("Datetime", "count"),
+            avg_txn=("Net Sales", "mean"),
+            gross=("Gross Sales", "sum"),
+            qty=("Qty", "sum")
+        ).reset_index()
+        grouped["profit"] = grouped["gross"] - grouped["net_sales"]
+        grouped["3M_Rolling"] = grouped.groupby("cat_group")["net_sales"].transform(
+            lambda x: x.rolling(90, min_periods=1).mean()
         )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No data for selected categories.")
-
-    # ===== 融合趋势图 =====
-    st.subheader("📊 Sales Trend & KPIs Over Time")
-    trend_stats = compute_trend(tx, total_inv)  # ✅ 缓存
-
-    if not trend_stats.empty:
-        st.dataframe(trend_stats, use_container_width=True)
-        st.plotly_chart(
-            px.line(
-                trend_stats,
-                x="date",
-                y=["net_sales", "transactions", "avg_txn", "inventory_value", "profit"],
-                title="Sales & KPIs Over Time"
-            ),
-            use_container_width=True
+        grouped["6M_Rolling"] = grouped.groupby("cat_group")["net_sales"].transform(
+            lambda x: x.rolling(180, min_periods=1).mean()
         )
+        grouped["inventory_value"] = _safe_sum(inv, "Current Quantity Vie Market & Bar")
+
+        # ✅ 按 category 过滤
+        grouped = grouped[grouped["cat_group"].isin(cats_sel)]
+
+        # ✅ 格式化日期（图表 & 表格统一 YYYY-MM-DD）
+        grouped["date"] = grouped["date"].dt.strftime("%Y-%m-%d")
+
+        # === 图表 ===
+        mapping = {
+            "Daily Net Sales": ("net_sales", "Daily Net Sales"),
+            "Daily Transactions": ("transactions", "Daily Transactions"),
+            "Avg Transaction": ("avg_txn", "Avg Transaction"),
+            "3M Avg": ("3M_Rolling", "3M Avg"),
+            "6M Avg": ("6M_Rolling", "6M Avg"),
+            "Inventory Value": ("inventory_value", "Inventory Value"),
+            "Profit (Amount)": ("profit", "Profit (Amount)"),
+            "Items Sold": ("qty", "Items Sold"),
+        }
+
+        for metric in data_sel:
+            if metric not in mapping:
+                continue
+            y, colname = mapping[metric]
+
+            plot_df = grouped.dropna(subset=[y])
+            if len(plot_df["date"].unique()) > 1:
+                fig = px.line(
+                    plot_df, x="date", y=y, color="cat_group",
+                    title=f"{colname} by Category", markers=True
+                )
+            else:
+                fig = px.scatter(
+                    plot_df, x="date", y=y, color="cat_group",
+                    title=f"{colname} by Category", size_max=12
+                )
+
+            # ✅ 横坐标日期格式化
+            fig.update_layout(xaxis=dict(type="category"))
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        # === 表格 ===
+        st.subheader("📋 Detailed Data")
+        cols_to_show = ["date", "cat_group"]
+        for sel in data_sel:
+            if sel in mapping:
+                cols_to_show.append(mapping[sel][0])
+
+        st.dataframe(grouped[cols_to_show], use_container_width=True)
+
     else:
-        st.info("No trend data available.")
+        st.info("Please select time range, data, and category to generate the chart.")
