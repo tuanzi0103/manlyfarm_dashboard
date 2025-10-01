@@ -28,7 +28,7 @@ def persisting_multiselect(label, options, key, default=None):
     return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 # === 改成 SQLite 查询 ===
-@st.cache_data(persist="disk")
+@st.cache_data
 def get_high_level_data(days=365):
     db = get_db()
 
@@ -118,35 +118,14 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     data_options = ["Daily Net Sales","Daily Transactions","Avg Transaction","3M Avg","6M Avg","Inventory Value","Profit (Amount)","Items Sold"]
     data_sel = persisting_multiselect("Choose data type", data_options, key="hl_data")
 
-    # === Category 选择 ===
-    bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
+    # —— 改动 1：这里新增大类 & 选项扩展 ——  #
+    bar_cats = {"Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"}
     all_cats = sorted(category["Category"].fillna("Unknown").unique().tolist())
-    all_cats_extended = all_cats + ["bar", "retail"]  # ✅ 新增 bar/retail
-
+    all_cats_extended = all_cats + ["bar", "retail"]
     cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats")
 
     if time_range and data_sel and cats_sel:
         grouped = category.copy()
-
-        # 构建超级类别
-        grouped["super_cat"] = grouped["Category"].fillna("Unknown")
-        grouped.loc[grouped["Category"].isin(bar_cats), "super_cat"] = "bar"
-        grouped.loc[~grouped["Category"].isin(bar_cats), "super_cat"] = "retail"
-
-        # 用户选择过滤
-        if any(x in ["bar", "retail"] for x in cats_sel):
-            grouped = grouped.groupby(["date", "super_cat"], as_index=False).agg({
-                "net_sales": "sum",
-                "transactions": "sum",
-                "avg_txn": "mean",
-                "gross": "sum",
-                "qty": "sum"
-            })
-            grouped = grouped[grouped["super_cat"].isin(cats_sel)]
-            cat_field = "super_cat"
-        else:
-            grouped = grouped[grouped["Category"].isin(cats_sel)]
-            cat_field = "Category"
 
         # ✅ 时间过滤
         if "WTD" in time_range:
@@ -160,6 +139,47 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             t2 = st.date_input("To")
             if t1 and t2:
                 grouped = grouped[(grouped["date"] >= pd.to_datetime(t1)) & (grouped["date"] <= pd.to_datetime(t2))]
+
+        # —— 改动 2：这里替换“类别过滤”逻辑，支持 大类+小类 共存 ——  #
+        small_cats = [c for c in cats_sel if c not in ("bar", "retail")]
+        parts = []
+
+        # 小类：保持原始明细（不聚合）
+        if small_cats:
+            parts.append(grouped[grouped["Category"].isin(small_cats)])
+
+        # 大类：bar（5 个子类的汇总）
+        if "bar" in cats_sel:
+            bar_df = grouped[grouped["Category"].isin(list(bar_cats))]
+            if not bar_df.empty:
+                agg = (bar_df.groupby("date", as_index=False)
+                       .agg(net_sales=("net_sales","sum"),
+                            transactions=("transactions","sum"),
+                            gross=("gross","sum"),
+                            qty=("qty","sum")))
+                # 重新计算汇总后的 avg_txn = net_sales / transactions
+                agg["avg_txn"] = (agg["net_sales"] / agg["transactions"]).replace([pd.NA, float("inf")], 0)
+                agg["Category"] = "bar"
+                parts.append(agg)
+
+        # 大类：retail（非 bar 的全部汇总）
+        if "retail" in cats_sel:
+            retail_df = grouped[~grouped["Category"].isin(list(bar_cats))]
+            if not retail_df.empty:
+                agg = (retail_df.groupby("date", as_index=False)
+                       .agg(net_sales=("net_sales","sum"),
+                            transactions=("transactions","sum"),
+                            gross=("gross","sum"),
+                            qty=("qty","sum")))
+                agg["avg_txn"] = (agg["net_sales"] / agg["transactions"]).replace([pd.NA, float("inf")], 0)
+                agg["Category"] = "retail"
+                parts.append(agg)
+
+        # 合并
+        if parts:
+            grouped = pd.concat(parts, ignore_index=True)
+        else:
+            grouped = grouped.iloc[0:0]
 
         mapping = {
             "Daily Net Sales": ("net_sales", "Daily Net Sales"),
@@ -181,22 +201,22 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             plot_df = grouped.dropna(subset=[y])
             if metric in ["3M Avg", "6M Avg"]:
                 if metric == "3M Avg":
-                    plot_df["rolling"] = plot_df.groupby(cat_field)[y].transform(lambda x: x.rolling(90, min_periods=1).mean())
+                    plot_df["rolling"] = plot_df.groupby("Category")[y].transform(lambda x: x.rolling(90, min_periods=1).mean())
                 else:
-                    plot_df["rolling"] = plot_df.groupby(cat_field)[y].transform(lambda x: x.rolling(180, min_periods=1).mean())
-                fig = px.line(plot_df, x="date", y="rolling", color=cat_field, title=colname, markers=True)
+                    plot_df["rolling"] = plot_df.groupby("Category")[y].transform(lambda x: x.rolling(180, min_periods=1).mean())
+                fig = px.line(plot_df, x="date", y="rolling", color="Category", title=colname, markers=True)
             elif metric == "Profit (Amount)":
                 plot_df["profit"] = plot_df["gross"] - plot_df["net_sales"]
-                fig = px.line(plot_df, x="date", y="profit", color=cat_field, title=colname, markers=True)
+                fig = px.line(plot_df, x="date", y="profit", color="Category", title=colname, markers=True)
             else:
-                fig = px.line(plot_df, x="date", y=y, color=cat_field, title=colname, markers=True)
+                fig = px.line(plot_df, x="date", y=y, color="Category", title=colname, markers=True)
 
             fig.update_layout(xaxis=dict(type="date"))
             st.plotly_chart(fig, use_container_width=True)
 
         # === 表格 ===
         st.subheader("📋 Detailed Data")
-        cols_to_show = ["date", cat_field]
+        cols_to_show = ["date", "Category"]
         for sel in data_sel:
             if sel in mapping:
                 cols_to_show.append(mapping[sel][0])
@@ -204,4 +224,4 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         st.dataframe(grouped[cols_to_show].assign(date=grouped["date"].dt.strftime("%Y-%m-%d")), use_container_width=True)
 
     else:
-        st.info("👉 Please select **time range**, **data type**, and **categories** to generate the chart.")
+        st.info("Please select time range, data, and category to generate the chart.")
