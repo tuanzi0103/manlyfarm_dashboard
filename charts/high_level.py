@@ -1,11 +1,25 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from services.analytics import daily_summary_mongo, category_summary_mongo
 from services.db import get_db
 
 def _safe_sum(df, col):
-    return df[col].sum() if col in df.columns else 0
+    """对任意列安全求和：先清洗成数值，再 sum，避免 str+int 报错"""
+    if df is None or df.empty or col not in df.columns:
+        return 0.0
+    s = df[col]
+
+    # 已经是数值列
+    if pd.api.types.is_numeric_dtype(s):
+        return float(pd.to_numeric(s, errors="coerce").sum(skipna=True))
+
+    # 可能是 "$1,234"、"1,234" 之类的字符串
+    s = (
+        s.astype(str)
+         .str.replace(r"[^0-9\.\-]", "", regex=True)  # 去掉 $, 逗号等
+         .replace("", pd.NA)
+    )
+    return float(pd.to_numeric(s, errors="coerce").sum(skipna=True) or 0.0)
 
 def persisting_multiselect(label, options, key, default=None):
     """多选框 + 记忆功能"""
@@ -13,36 +27,54 @@ def persisting_multiselect(label, options, key, default=None):
         st.session_state[key] = default or []
     return st.multiselect(label, options, default=st.session_state[key], key=key)
 
-# ✅ 缓存数据库预聚合
-@st.cache_data
+# === 改成 SQLite 查询 ===
+@st.cache_data(persist="disk")
 def get_high_level_data(days=365):
     db = get_db()
 
-    daily_docs = list(db.summary_daily.find({}, {"_id": 0}).limit(1))
-    category_docs = list(db.summary_category.find({}, {"_id": 0}).limit(1))
+    daily = pd.read_sql(
+        """
+        SELECT 
+            date(Datetime) as date,
+            SUM([Net Sales]) as net_sales,
+            COUNT(*) as transactions,
+            AVG([Net Sales]) as avg_txn,
+            SUM([Gross Sales]) as gross,
+            SUM(Qty) as qty
+        FROM transactions
+        GROUP BY date
+        ORDER BY date
+        """,
+        db
+    )
 
-    # ✅ 如果两个集合都是空的，立刻返回空 DataFrame
-    if not daily_docs and not category_docs:
-        return pd.DataFrame(), pd.DataFrame()
+    category = pd.read_sql(
+        """
+        SELECT 
+            date(Datetime) as date,
+            Category,
+            SUM([Net Sales]) as net_sales,
+            COUNT(*) as transactions,
+            AVG([Net Sales]) as avg_txn,
+            SUM([Gross Sales]) as gross,
+            SUM(Qty) as qty
+        FROM transactions
+        GROUP BY date, Category
+        ORDER BY date
+        """,
+        db
+    )
 
-    daily = pd.DataFrame(list(db.summary_daily.find({}, {"_id": 0})))
-    category = pd.DataFrame(list(db.summary_category.find({}, {"_id": 0})))
-
-    if not daily.empty and "date" in daily.columns:
+    if not daily.empty:
         daily["date"] = pd.to_datetime(daily["date"])
-        daily = daily.sort_values("date")
-
-    if not category.empty and "date" in category.columns:
+    if not category.empty:
         category["date"] = pd.to_datetime(category["date"])
-        category = category.sort_values(["Category", "date"])
 
     return daily, category
-
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     st.header("📊 High Level Report")
 
-    # === 加载 Mongo 聚合结果 ===
     daily, category = get_high_level_data()
 
     if daily.empty or category.empty:
@@ -86,11 +118,35 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     data_options = ["Daily Net Sales","Daily Transactions","Avg Transaction","3M Avg","6M Avg","Inventory Value","Profit (Amount)","Items Sold"]
     data_sel = persisting_multiselect("Choose data type", data_options, key="hl_data")
 
+    # === Category 选择 ===
+    bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
     all_cats = sorted(category["Category"].fillna("Unknown").unique().tolist())
-    cats_sel = persisting_multiselect("Choose categories", all_cats, key="hl_cats")
+    all_cats_extended = all_cats + ["bar", "retail"]  # ✅ 新增 bar/retail
+
+    cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats")
 
     if time_range and data_sel and cats_sel:
         grouped = category.copy()
+
+        # 构建超级类别
+        grouped["super_cat"] = grouped["Category"].fillna("Unknown")
+        grouped.loc[grouped["Category"].isin(bar_cats), "super_cat"] = "bar"
+        grouped.loc[~grouped["Category"].isin(bar_cats), "super_cat"] = "retail"
+
+        # 用户选择过滤
+        if any(x in ["bar", "retail"] for x in cats_sel):
+            grouped = grouped.groupby(["date", "super_cat"], as_index=False).agg({
+                "net_sales": "sum",
+                "transactions": "sum",
+                "avg_txn": "mean",
+                "gross": "sum",
+                "qty": "sum"
+            })
+            grouped = grouped[grouped["super_cat"].isin(cats_sel)]
+            cat_field = "super_cat"
+        else:
+            grouped = grouped[grouped["Category"].isin(cats_sel)]
+            cat_field = "Category"
 
         # ✅ 时间过滤
         if "WTD" in time_range:
@@ -104,9 +160,6 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             t2 = st.date_input("To")
             if t1 and t2:
                 grouped = grouped[(grouped["date"] >= pd.to_datetime(t1)) & (grouped["date"] <= pd.to_datetime(t2))]
-
-        # ✅ 类别过滤
-        grouped = grouped[grouped["Category"].isin(cats_sel)]
 
         mapping = {
             "Daily Net Sales": ("net_sales", "Daily Net Sales"),
@@ -128,22 +181,22 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             plot_df = grouped.dropna(subset=[y])
             if metric in ["3M Avg", "6M Avg"]:
                 if metric == "3M Avg":
-                    plot_df["rolling"] = plot_df.groupby("Category")[y].transform(lambda x: x.rolling(90, min_periods=1).mean())
+                    plot_df["rolling"] = plot_df.groupby(cat_field)[y].transform(lambda x: x.rolling(90, min_periods=1).mean())
                 else:
-                    plot_df["rolling"] = plot_df.groupby("Category")[y].transform(lambda x: x.rolling(180, min_periods=1).mean())
-                fig = px.line(plot_df, x="date", y="rolling", color="Category", title=colname, markers=True)
+                    plot_df["rolling"] = plot_df.groupby(cat_field)[y].transform(lambda x: x.rolling(180, min_periods=1).mean())
+                fig = px.line(plot_df, x="date", y="rolling", color=cat_field, title=colname, markers=True)
             elif metric == "Profit (Amount)":
                 plot_df["profit"] = plot_df["gross"] - plot_df["net_sales"]
-                fig = px.line(plot_df, x="date", y="profit", color="Category", title=colname, markers=True)
+                fig = px.line(plot_df, x="date", y="profit", color=cat_field, title=colname, markers=True)
             else:
-                fig = px.line(plot_df, x="date", y=y, color="Category", title=colname, markers=True)
+                fig = px.line(plot_df, x="date", y=y, color=cat_field, title=colname, markers=True)
 
             fig.update_layout(xaxis=dict(type="date"))
             st.plotly_chart(fig, use_container_width=True)
 
         # === 表格 ===
         st.subheader("📋 Detailed Data")
-        cols_to_show = ["date", "Category"]
+        cols_to_show = ["date", cat_field]
         for sel in data_sel:
             if sel in mapping:
                 cols_to_show.append(mapping[sel][0])
@@ -151,4 +204,4 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         st.dataframe(grouped[cols_to_show].assign(date=grouped["date"].dt.strftime("%Y-%m-%d")), use_container_width=True)
 
     else:
-        st.info("Please select time range, data, and category to generate the chart.")
+        st.info("👉 Please select **time range**, **data type**, and **categories** to generate the chart.")
