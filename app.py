@@ -1,29 +1,27 @@
+import os
 import streamlit as st
 import pandas as pd
 from services.analytics import load_all
 from services.db import get_db
-from services.ingestion import ingest_excel, ingest_csv
+from services.ingestion import ingest_excel, ingest_csv, init_db_from_drive_once
 from charts.high_level import show_high_level
 # 其他模块
 from charts.sales_report import show_sales_report
 from charts.inventory import show_inventory
 from charts.product_mix_only import show_product_mix_only
 from charts.customer_segmentation import show_customer_segmentation
-from services.ingestion import ingest_excel, ingest_csv, init_db_from_drive_once
 from init_db import init_db
-from services.ingestion import init_db_from_drive_once
-import os
+
+# 关闭文件监控，避免 Streamlit Cloud 报 inotify 错误
 os.environ["WATCHDOG_DISABLE_FILE_WATCH"] = "true"
 
 # ✅ 确保 SQLite 文件存在
 init_db()
-# ✅ 确保有数据表（如果是空的就从 Drive 拉）
+# ✅ 如果是空库 → 从 Google Drive 导入
 init_db_from_drive_once()
-
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
 st.title("📊 Manly Farm Dashboard")
-
 
 # ✅ 缓存数据库加载
 @st.cache_data(show_spinner="loading...")
@@ -54,19 +52,20 @@ if uploaded_files:
     st.sidebar.success("✅ Files ingested successfully.")
     load_db_cached.clear()   # 清理缓存，下次刷新自动重算
 
-# === 清空数据库 ===
+# === 清空数据库（SQLite 版） ===
 if st.sidebar.button("🗑️ Clear Database"):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM transactions")
-    cur.execute("DELETE FROM inventory")
-    cur.execute("DELETE FROM members")
+    for table in ["transactions", "inventory", "members"]:
+        try:
+            cur.execute(f"DELETE FROM {table}")
+        except Exception:
+            pass
     conn.commit()
     st.sidebar.success("✅ Database cleared!")
     load_db_cached.clear()
 
-
-# === 单位选择 ===
+# === 单位选择（SQLite 版） ===
 st.sidebar.subheader("📏 Units")
 
 if inv is not None and not inv.empty and "Unit" in inv.columns:
@@ -74,8 +73,12 @@ if inv is not None and not inv.empty and "Unit" in inv.columns:
 else:
     units_available = ["Gram 1.000", "Kilogram 1.000", "Milligram 1.000"]
 
-db = get_db()
-db_units = [u["name"] for u in db.units.find({}, {"_id": 0, "name": 1})]
+conn = get_db()
+try:
+    rows = conn.execute("SELECT name FROM units").fetchall()
+    db_units = [r[0] for r in rows]
+except Exception:
+    db_units = []
 
 all_units = sorted(list(set(units_available + db_units)))
 unit = st.sidebar.selectbox("Choose unit", all_units)
@@ -83,7 +86,9 @@ unit = st.sidebar.selectbox("Choose unit", all_units)
 new_unit = st.sidebar.text_input("Add new unit")
 if st.sidebar.button("➕ Add Unit"):
     if new_unit and new_unit not in all_units:
-        db.units.insert_one({"name": new_unit})
+        conn.execute("CREATE TABLE IF NOT EXISTS units (name TEXT UNIQUE)")
+        conn.execute("INSERT OR IGNORE INTO units (name) VALUES (?)", (new_unit,))
+        conn.commit()
         st.sidebar.success(f"✅ Added new unit: {new_unit}")
         st.experimental_rerun()
 
