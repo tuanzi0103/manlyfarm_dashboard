@@ -7,6 +7,17 @@ from services.db import get_db
 # === Google Drive 相关 ===
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+import os
+from services.db import DB_PATH
+
+# ✅ 启动时仅在数据库不存在时执行一次导入
+def init_db_from_drive_once():
+    if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
+        try:
+            ingest_from_drive_all()
+            print("✅ Database initialized from Google Drive")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize DB from Google Drive: {e}")
 
 
 FOLDER_ID = "1lZGE0DkgKyox1HbBzuhZ-oypDF478jBj"
