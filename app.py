@@ -9,9 +9,14 @@ from charts.sales_report import show_sales_report
 from charts.inventory import show_inventory
 from charts.product_mix_only import show_product_mix_only
 from charts.customer_segmentation import show_customer_segmentation
+from services.ingestion import ingest_excel, ingest_csv, init_db_from_drive_once
+
+# ✅ 启动时初始化数据库（仅第一次）
+init_db_from_drive_once()
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
 st.title("📊 Manly Farm Dashboard")
+
 
 # ✅ 缓存数据库加载
 @st.cache_data(show_spinner="loading...")
