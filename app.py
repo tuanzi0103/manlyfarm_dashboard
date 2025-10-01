@@ -11,6 +11,9 @@ from charts.product_mix_only import show_product_mix_only
 from charts.customer_segmentation import show_customer_segmentation
 from services.ingestion import ingest_excel, ingest_csv, init_db_from_drive_once
 
+import os
+os.environ["WATCHDOG_DISABLE_FILE_WATCH"] = "true"
+
 # ✅ 启动时初始化数据库（仅第一次）
 init_db_from_drive_once()
 
