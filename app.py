@@ -10,12 +10,16 @@ from charts.inventory import show_inventory
 from charts.product_mix_only import show_product_mix_only
 from charts.customer_segmentation import show_customer_segmentation
 from services.ingestion import ingest_excel, ingest_csv, init_db_from_drive_once
-
+from services.init_db import init_db
+from services.ingestion import init_db_from_drive_once
 import os
 os.environ["WATCHDOG_DISABLE_FILE_WATCH"] = "true"
 
-# ✅ 启动时初始化数据库（仅第一次）
+# ✅ 确保 SQLite 文件存在
+init_db()
+# ✅ 确保有数据表（如果是空的就从 Drive 拉）
 init_db_from_drive_once()
+
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
 st.title("📊 Manly Farm Dashboard")
