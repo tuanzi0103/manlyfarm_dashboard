@@ -52,14 +52,15 @@ if uploaded_files:
 
 # === 清空数据库 ===
 if st.sidebar.button("🗑️ Clear Database"):
-    db = get_db()
-    db.transactions.delete_many({})
-    db.inventory.delete_many({})
-    db.members.delete_many({})
-    db.summary_daily.delete_many({})
-    db.summary_category.delete_many({})
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM transactions")
+    cur.execute("DELETE FROM inventory")
+    cur.execute("DELETE FROM members")
+    conn.commit()
     st.sidebar.success("✅ Database cleared!")
     load_db_cached.clear()
+
 
 # === 单位选择 ===
 st.sidebar.subheader("📏 Units")
