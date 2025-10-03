@@ -1,6 +1,8 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
 from services.analytics import (
     member_flagged_transactions,
     member_frequency_stats,
@@ -21,194 +23,155 @@ def show_customer_segmentation(tx, members):
         st.info("No transaction data available.")
         return
 
-    df = member_flagged_transactions(tx)
+    # --- 给交易数据打上 is_member 标记
+    df = member_flagged_transactions(tx, members)
 
-    # 1) User analysis
-    st.subheader("1) User Analysis")
-    mode = st.selectbox("Select Target Group", ["Members", "Non-Members"])
+    # =========================
+    # 👑 前置功能（User Analysis 之前）
+    # =========================
 
-    if mode == "Members":
-        m = df[df["is_member"]].copy()
-        stats = member_frequency_stats(m)
+    st.markdown("### ✨ Overview add-ons")
 
-        if "First Name" in stats.columns and "Surname" in stats.columns:
-            stats["Name"] = (stats["First Name"].fillna("") + " " + stats["Surname"].fillna("")).str.strip()
+    # [1] KPI
+    net_col = "Net Sales" if "Net Sales" in df.columns else None
+    cid_col = "Customer ID" if "Customer ID" in df.columns else None
+    avg_spend_member = avg_spend_non_member = None
+    if net_col and cid_col and "is_member" in df.columns:
+        nets = pd.to_numeric(df[net_col], errors="coerce")
+        df_kpi = df.assign(_net=nets)
+        avg_spend_member = df_kpi[df_kpi["is_member"]]["_net"].mean()
+        avg_spend_non_member = df_kpi[~df_kpi["is_member"]]["_net"].mean()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Average spend per customers **enrolled**",
+                  "-" if pd.isna(avg_spend_member) else f"{avg_spend_member:,.2f}")
+    with c2:
+        st.metric("Average spend per customers **not enrolled**",
+                  "-" if pd.isna(avg_spend_non_member) else f"{avg_spend_non_member:,.2f}")
+
+    st.divider()
+
+    # [2] 两个柱状预测
+    time_col = next((c for c in ["Datetime", "Date", "date", "Transaction Time"] if c in df.columns), None)
+    if time_col:
+        t = pd.to_datetime(df[time_col], errors="coerce")
+        day_df = df.assign(_dow=t.dt.day_name())
+        dow_counts = day_df.dropna(subset=["_dow"]).groupby("_dow").size().reset_index(name="Predicted Transactions")
+        cat_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        dow_counts["_dow"] = pd.Categorical(dow_counts["_dow"], categories=cat_order, ordered=True)
+        st.plotly_chart(px.bar(dow_counts.sort_values("_dow"), x="_dow", y="Predicted Transactions",
+                               title="Prediction: What days customers are going to shop"), use_container_width=True)
+
+    item_col = next((c for c in ["Item", "Item Name", "Variation Name", "SKU Name"] if c in df.columns), None)
+    qty_col = "Qty" if "Qty" in df.columns else None
+    if item_col:
+        if qty_col:
+            top_items = df.groupby(item_col)[qty_col].sum().reset_index().sort_values(qty_col, ascending=False).head(15)
+            st.plotly_chart(px.bar(top_items, x=item_col, y=qty_col,
+                                   title="Prediction: What they will buy (Top 15)"), use_container_width=True)
         else:
-            stats["Name"] = ""
+            top_items = df[item_col].value_counts().reset_index().rename(columns={"index": "Item", item_col: "Count"}).head(15)
+            st.plotly_chart(px.bar(top_items, x="Item", y="Count",
+                                   title="Prediction: What they will buy (Top 15)"), use_container_width=True)
 
-        show_cols = [c for c in ["Customer ID", "Name", "Phone",
-                                 "visits", "last_visit", "net_sales"] if c in stats.columns or c == "Name"]
+    st.divider()
 
-        options = sorted(set(
-            stats["Customer ID"].astype(str).tolist()
-            + stats["Name"].astype(str).tolist()
-            + stats.get("Phone", pd.Series([], dtype=str)).astype(str).tolist()
-        ))
-        selected = st.multiselect("Search by Customer ID / Name / Phone", options=options)
+    # [3] Top20 churn 风险
+    if time_col and cid_col:
+        t = pd.to_datetime(df[time_col], errors="coerce")
+        df["_ts"] = t
+        today = pd.Timestamp.today()
+        first_of_this_month = today.replace(day=1)
+        last_month_end = first_of_this_month - pd.Timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
 
-        if selected:
-            mask = (
-                stats["Customer ID"].astype(str).isin(selected)
-                | stats["Name"].astype(str).isin(selected)
-                | stats.get("Phone", pd.Series("", index=stats.index)).astype(str).isin(selected)
-            )
-            stats = stats[mask]
+        month_key = df["_ts"].dt.to_period("M").rename("month")
+        day_key = df["_ts"].dt.date.rename("day")
 
-        st.dataframe(stats[show_cols] if show_cols else stats, use_container_width=True)
+        txn_col = "Transaction ID" if "Transaction ID" in df.columns else None
+        base = df.drop_duplicates([cid_col, "_ts", txn_col]) if txn_col else df
 
-    else:
-        nm = df[~df["is_member"]].copy()
-        stats_s = non_member_overview(nm)
-        if not stats_s.empty:
-            s = stats_s.to_dict()
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Foot Traffic", int(s.get("traffic", 0) or 0))
-            c2.metric("Product Sales", f"{s.get('Product Sales', 0):.2f}")
-            c3.metric("Discounts", f"{s.get('Discounts', 0):.2f}")
-            c4.metric("Net Sales", f"{s.get('Net Sales', 0):.2f}")
-            c5.metric("Gross Sales", f"{s.get('Gross Sales', 0):.2f}")
+        per_day = base.groupby([cid_col, month_key, day_key]).size().reset_index(name="visits_per_day")
+        per_month = per_day.groupby([cid_col, "month"]).size().reset_index(name="visits")
+
+        per_month["month_start"] = per_month["month"].dt.to_timestamp()
+        mask_last = (per_month["month_start"] >= last_month_start) & (per_month["month_start"] <= last_month_end)
+        pm_last = per_month.loc[mask_last, [cid_col, "visits"]].rename(columns={"visits": "visits_last_month"})
+        hist_avg = per_month.loc[~mask_last].groupby(cid_col)["visits"].mean().reset_index(
+            name="avg_visits_per_month_excl_last")
+
+        churn_tag = hist_avg.merge(pm_last, on=cid_col, how="left").fillna({"visits_last_month": 0})
+        churn_tag = churn_tag.sort_values("avg_visits_per_month_excl_last", ascending=False).head(20)
+
+        names_map = (tx.loc[:, ["Customer ID", "Customer Name"]]
+                     .dropna(subset=["Customer ID"])
+                     .drop_duplicates("Customer ID"))
+        names_map["Customer ID"] = names_map["Customer ID"].astype(str)
+
+        phones_map = (members.rename(columns={"Square Customer ID": "Customer ID", "Phone Number": "Phone"})
+                      [["Customer ID", "Phone"]]
+                      .dropna(subset=["Customer ID"])
+                      .drop_duplicates("Customer ID"))
+        phones_map["Customer ID"] = phones_map["Customer ID"].astype(str)
+
+        risky = (churn_tag.assign(**{"Customer ID": churn_tag["Customer ID"].astype(str)})
+                 .merge(names_map, on="Customer ID", how="left")
+                 .merge(phones_map, on="Customer ID", how="left"))
+
+        st.subheader("Top 20: Regulars who **didn't come last month**")
+        st.dataframe(risky[["Customer Name", "Customer ID", "Phone", "avg_visits_per_month_excl_last", "visits_last_month"]],
+                     use_container_width=True)
+
+    st.divider()
+
+    # [4] 姓名/ID 搜索（显示姓名，支持用 ID 搜索）
+    options = []
+    if "Customer ID" in tx.columns and "Customer Name" in tx.columns:
+        options = (tx[["Customer ID", "Customer Name"]]
+                   .dropna(subset=["Customer ID"])
+                   .drop_duplicates("Customer ID"))
+        # 🚩 确保 Customer ID 全部是字符串，避免 multiselect 报错
+        options["Customer ID"] = options["Customer ID"].astype(str)
+        options = options.to_dict(orient="records")
+
+    sel_ids = st.multiselect(
+        "🔎 Search customers by name (multi-select)",
+        options=[opt["Customer ID"] for opt in options],
+        format_func=lambda x: str(next((opt["Customer Name"] for opt in options if opt["Customer ID"] == x), x))
+    )
+
+    if sel_ids:
+        chosen = tx[tx["Customer ID"].astype(str).isin(sel_ids)]
+        st.subheader("All transactions for selected customers")
+        st.dataframe(chosen, use_container_width=True)
+
+        if item_col and qty_col:
+            top5 = (chosen.groupby(["Customer ID", "Customer Name", item_col])[qty_col].sum()
+                    .reset_index()
+                    .sort_values(["Customer Name", qty_col], ascending=[True, False])
+                    .groupby("Customer ID").head(5))
+            st.subheader("Frequently purchased items (Top 5 / customer)")
+            st.dataframe(top5, use_container_width=True)
+
+    st.divider()
+
+    # [5] Heatmap 可切换
+    st.subheader("Heatmap (selectable metric)")
+    metric = st.selectbox("Metric", ["net sales", "number of transactions"], index=0)
+    if time_col:
+        t = pd.to_datetime(df[time_col], errors="coerce")
+        base = df.assign(_date=t)
+        base["_hour"] = base["_date"].dt.hour
+        base["_dow"] = base["_date"].dt.day_name()
+        if metric == "net sales" and net_col:
+            agg = base.groupby(["_dow","_hour"])[net_col].sum().reset_index(name="value")
         else:
-            st.info("No non-member statistics available")
-
-    # 2) User Purchase Preferences
-    st.subheader("2) User Purchase Preferences")
-    cc = category_counts(tx)
-    cat_query_multi = st.multiselect("Search Category", options=cc["Category"].astype(str).unique().tolist())
-    if cat_query_multi and not cc.empty:
-        cc = cc[cc["Category"].astype(str).isin(cat_query_multi)]
-
-    if not cc.empty:
-        st.plotly_chart(px.bar(cc, x="Category", y="count", title="Purchase Quantity by Category"), use_container_width=True)
-    else:
-        st.info("No category statistics available to display.")
-
-    # 3) Purchase Time Heatmap
-    st.subheader("3) Purchase Time Heatmap")
-    pv = heatmap_pivot(tx)
-    if not pv.empty:
-        st.plotly_chart(px.imshow(pv, aspect="auto", color_continuous_scale="Blues", title="Shopping Peak Hours"), use_container_width=True)
-    else:
-        st.info("Not enough time data to generate a heatmap.")
-
-    # 4) Personalized Recommendations
-    st.subheader("4) Personalized Recommendations")
-    who = st.selectbox("Recommendation Target", ["Member", "Non-Member"], key="rec_mode")
-    if who == "Member":
-        m = df[df["is_member"]].copy()
-
-        if "First Name" in m.columns and "Surname" in m.columns:
-            m["Name"] = (m["First Name"].fillna("") + " " + m["Surname"].fillna("")).str.strip()
-        else:
-            m["Name"] = ""
-
-        # ✅ 构建映射：显示值 → Customer ID
-        display_map = {}
-        for _, row in m.iterrows():
-            cid = str(row.get("Customer ID", ""))
-            name = str(row.get("Name", ""))
-            phone = str(row.get("Phone", ""))
-            if cid: display_map[cid] = cid
-            if name: display_map[name] = cid
-            if phone: display_map[phone] = cid
-
-        options = sorted(display_map.keys())
-        selected_display = st.multiselect("Select Member(s) for Recommendation", options=options)
-
-        # 转回 Customer ID 调用函数
-        for disp in selected_display:
-            cid = display_map[disp]
-            cat_stats = top_categories_for_customer(tx, cid)
-            if not cat_stats.empty:
-                st.plotly_chart(
-                    px.bar(cat_stats, x="Category", y="qty", title=f"Top Categories for Member {cid}"),
-                    use_container_width=True
-                )
-            st.write("Similar Popular Categories (from transactions):")
-            rec = recommend_similar_categories(tx, cust_id=cid)
-            if not rec.empty:
-                st.plotly_chart(
-                    px.bar(rec, x="Category", y="count", title="Popular Categories by Transactions"),
-                    use_container_width=True
-                )
-    else:
-        st.write("General Recommendations:")
-        rec = recommend_similar_categories(tx)
-        if not rec.empty:
-            st.plotly_chart(
-                px.bar(rec, x="Category", y="count", title="Popular Categories (Non-Member, Transactions)"),
-                use_container_width=True
-            )
-
-    # 🔹 Retention & Loyalty
-    st.subheader("🔁 Customer Retention & Loyalty")
-    mem_tx = tx[tx["is_member"]] if "is_member" in tx.columns else tx.copy()
-    tab1, tab2 = st.tabs(["Returning Customers", "Churn Analysis"])
-
-    # Returning Customers
-    with tab1:
-        st.subheader("Returning Customers (with LTV Forecast)")
-        if "First Name" in mem_tx.columns and "Surname" in mem_tx.columns:
-            mem_tx["Name"] = (mem_tx["First Name"].fillna("") + " " + mem_tx["Surname"].fillna("")).str.strip()
-        else:
-            mem_tx["Name"] = ""
-
-        # ✅ 构建映射：显示值 → Customer ID
-        display_map = {}
-        for _, row in mem_tx.iterrows():
-            cid = str(row.get("Customer ID", ""))
-            name = str(row.get("Name", ""))
-            phone = str(row.get("Phone", ""))
-            if cid: display_map[cid] = cid
-            if name: display_map[name] = cid
-            if phone: display_map[phone] = cid
-
-        options = sorted(display_map.keys())
-        selected_display = st.multiselect("Select Member(s) for LTV Forecast", options=options)
-
-        for disp in selected_display:
-            cid = display_map[disp]
-            ltv = ltv_timeseries_for_customer(mem_tx, cid, horizon_days=180)
-            if not ltv.empty:
-                st.plotly_chart(
-                    px.line(ltv, x="date", y="expected_ltv", title=f"Expected Cumulative LTV (180d) for {cid}"),
-                    use_container_width=True,
-                )
-            rec = recommend_bundles_for_customer(mem_tx, cid)
-            if not rec.empty:
-                st.table(rec)
-
-    # Churn Analysis
-    with tab2:
-        st.subheader("Churn Analysis (Members Only)")
-        sig = churn_signals_for_member(mem_tx)
-        if not sig.empty:
-            enrich_cols = ["Customer ID"]
-            if "First Name" in mem_tx.columns: enrich_cols.append("First Name")
-            if "Surname" in mem_tx.columns: enrich_cols.append("Surname")
-            if "Phone" in mem_tx.columns: enrich_cols.append("Phone")
-
-            sig = sig.merge(mem_tx[enrich_cols].drop_duplicates("Customer ID"),
-                            on="Customer ID", how="left")
-
-            if "First Name" in sig.columns and "Surname" in sig.columns:
-                sig["Name"] = (sig["First Name"].fillna("") + " " + sig["Surname"].fillna("")).str.strip()
+            txn_col2 = "Transaction ID" if "Transaction ID" in base.columns else None
+            if txn_col2:
+                agg = base.groupby(["_dow","_hour"])[txn_col2].nunique().reset_index(name="value")
             else:
-                sig["Name"] = ""
-            sig["display"] = sig["Name"].replace("", pd.NA).fillna(sig["Customer ID"])
-
-            show_cols = ["Customer ID", "Name", "days_since", "risk_flag"]
-            if "Phone" in sig.columns:
-                show_cols.insert(2, "Phone")
-
-            fig = px.bar(
-                sig,
-                x="display",
-                y="days_since",
-                color="risk_flag",
-                title="Days Since Last Purchase (Red = At Risk)",
-                labels={"days_since": "Days Since Last Purchase"}
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(sig[show_cols], use_container_width=True)
-        else:
-            st.info("No churn signals available.")
+                agg = base.groupby(["_dow","_hour"]).size().reset_index(name="value")
+        pv = agg.pivot(index="_dow", columns="_hour", values="value").fillna(0)
+        st.plotly_chart(px.imshow(pv, aspect="auto", title=f"Heatmap by {metric.title()} (Hour x Day)"),
+                        use_container_width=True)
