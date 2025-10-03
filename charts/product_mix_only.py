@@ -216,7 +216,10 @@ def show_product_mix_only(tx: pd.DataFrame):
     if tx is None or tx.empty:
         st.info("No transaction data available.")
         return
-    tx = _precompute(tx)
+
+    # 🔹 统一 Datetime/date 类型为 Timestamp
+    tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
+    tx["date"] = tx["Datetime"].dt.normalize()   # 保持 Timestamp，不转成 date
 
     # --------- 建议 ---------
     st.subheader("💡 Discount Forecast Suggestions")
@@ -294,7 +297,7 @@ def show_product_mix_only(tx: pd.DataFrame):
     today = pd.Timestamp.today().normalize()
     cutoff = today - pd.Timedelta(days=30)
 
-    # 过去30天销量 → 日均销量
+    # 过去30天销量 → 日均销量（保证都是 Timestamp）
     daily_sales = (
         tx[tx["date"] >= cutoff]
         .groupby(tx_key)["Qty"].sum() / 30
