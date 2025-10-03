@@ -1,3 +1,4 @@
+# app.py
 import os
 import streamlit as st
 import pandas as pd
@@ -17,7 +18,7 @@ os.environ["WATCHDOG_DISABLE_FILE_WATCH"] = "true"
 
 # ✅ 确保 SQLite 文件存在
 init_db()
-# ✅ 如果是空库 → 从 Google Drive 导入
+# ✅ 如果是空库 → 从 Google Drive 导入（函数实现见 services/ingestion.py）
 init_db_from_drive_once()
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
@@ -27,7 +28,7 @@ st.title("📊 Manly Farm Dashboard")
 @st.cache_data(show_spinner="loading...")
 def load_db_cached(days=365):
     db = get_db()
-    return load_all(days=days, db=db)
+    return load_all(db=db)
 
 # === 数据加载 ===
 tx, mem, inv = load_db_cached()
