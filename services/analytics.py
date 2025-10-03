@@ -1,8 +1,10 @@
+# services/analytics.py
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from datetime import timedelta
 from services.db import get_db
+import pandas as pd
 
 # === 工具函数 ===
 def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -45,7 +47,6 @@ def load_transactions(db, days=365, time_from=None, time_to=None):
         df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
     return df
 
-
 def load_inventory(db) -> pd.DataFrame:
     df = pd.read_sql("SELECT * FROM inventory", db)
     return _clean_df(df)
@@ -54,13 +55,60 @@ def load_members(db) -> pd.DataFrame:
     df = pd.read_sql("SELECT * FROM members", db)
     return _clean_df(df)
 
-def load_all(days=365, db=None, time_from=None, time_to=None):
-    if db is None:
-        db = get_db()
-    tx = load_transactions(db, days, time_from, time_to)
-    mem = load_members(db)
-    inv = load_inventory(db)
+def compute_inventory_profit(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    正确计算公式：
+    - retail_total:
+        BM = N → Price × Qty
+        BM = Y → (Price / 11 * 10) × Qty
+    - inventory_value = Default Unit Cost × Qty
+    - profit = retail_total - inventory_value
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+
+    for col in ["Tax - GST (10%)", "Price", "Current Quantity Vie Market & Bar", "Default Unit Cost"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    price = _to_numeric(df["Price"])
+    qty = _to_numeric(df["Current Quantity Vie Market & Bar"])
+    unit_cost = _to_numeric(df["Default Unit Cost"])
+    tax_flag = df["Tax - GST (10%)"].astype(str)
+
+    retail_total = pd.Series(0.0, index=df.index)
+    retail_total.loc[tax_flag.eq("N")] = (price * qty).loc[tax_flag.eq("N")]
+    retail_total.loc[tax_flag.eq("Y")] = ((price / 11.0 * 10.0) * qty).loc[tax_flag.eq("Y")]
+
+    inventory_value = unit_cost * qty
+    profit = retail_total - inventory_value
+
+    df["retail_total"] = retail_total
+    df["inventory_value"] = inventory_value
+    df["profit"] = profit
+
+    return df
+
+def load_all(db=None, time_from=None, time_to=None, days=None):
+    conn = db or get_db()
+
+    tx = pd.read_sql("SELECT * FROM transactions", conn)
+    inv = pd.read_sql("SELECT * FROM inventory", conn)
+
+    try:
+        mem = pd.read_sql("SELECT * FROM members", conn)
+    except Exception:
+        mem = pd.DataFrame()
+
+    # ✅ 每次都重新计算 inventory_value / profit，保证口径一致
+    if not inv.empty:
+        inv = compute_inventory_profit(inv)
+
     return tx, mem, inv
+
+
 
 # === 日报表 ===
 def daily_summary(transactions: pd.DataFrame) -> pd.DataFrame:
@@ -92,7 +140,6 @@ def daily_summary(transactions: pd.DataFrame) -> pd.DataFrame:
     )
     summary["profit"] = summary["gross"] - summary["net_sales"]
     return summary
-
 
 # === 销售预测 ===
 def forecast_sales(transactions: pd.DataFrame, periods: int = 30) -> pd.DataFrame:
@@ -153,9 +200,11 @@ def member_frequency_stats(transactions: pd.DataFrame, members: pd.DataFrame) ->
         .reset_index()
         .rename(columns={"count": "txn_count", "min": "first_txn", "max": "last_txn"})
     )
-    stats["days_active"] = (stats["max"] - stats["min"]).dt.days.clip(lower=1)
+    # ✅ 用新的列名来计算
+    stats["days_active"] = (stats["last_txn"] - stats["first_txn"]).dt.days.clip(lower=1)
     stats["avg_days_between"] = stats["days_active"] / stats["txn_count"]
     return stats
+
 
 def non_member_overview(transactions: pd.DataFrame, members: pd.DataFrame) -> pd.DataFrame:
     if transactions.empty:
