@@ -59,11 +59,6 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     df_filtered["Datetime"] <= pd.to_datetime(end_date))
         df_filtered = df_filtered.loc[mask]
 
-    # 显示当前选择的时间范围
-    st.sidebar.info(f"时间范围: {range_opt}")
-    if start_date and end_date:
-        st.sidebar.info(f"从 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
-
     # ---------------- 修改计算逻辑：单一类使用 Net Sales + Tax ----------------
     df = df_filtered.copy()
 
