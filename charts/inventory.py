@@ -56,18 +56,27 @@ def show_inventory(tx, inventory: pd.DataFrame):
             if col not in df.columns:
                 df[col] = 0
 
-        # ✅ Quantity 取绝对值
-        df["Quantity"] = pd.to_numeric(df["Current Quantity Vie Market & Bar"], errors="coerce").fillna(0).abs()
+        # ✅ 修复核心：明确分离库存数量含义
+        # raw_quantity: 原始库存数量（负值表示缺货）
+        df["raw_quantity"] = pd.to_numeric(df["Current Quantity Vie Market & Bar"], errors="coerce").fillna(0)
+
+        # valuation_quantity: 用于估值计算的实际库存（负值转为0）
+        df["valuation_quantity"] = df["raw_quantity"].clip(lower=0)
+
+        # restock_quantity: 用于补货分析的缺货数量（负值取绝对值）
+        df["restock_quantity"] = df["raw_quantity"].clip(upper=0).abs()
+
         df["Price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0)
         df["UnitCost"] = pd.to_numeric(df["Default Unit Cost"], errors="coerce").fillna(0)
 
         # === 计算 Total Retail Value / Inventory Value / Profit ===
+        # ✅ 修复：只使用实际库存（valuation_quantity）进行估值计算
         def calc_retail(row):
-            O, AA, tax = row["Price"], row["Quantity"], str(row["Tax - GST (10%)"]).strip().upper()
+            O, AA, tax = row["Price"], row["valuation_quantity"], str(row["Tax - GST (10%)"]).strip().upper()
             return (O / 11 * 10) * AA if tax == "Y" else O * AA
 
         df["Total Retail Value"] = df.apply(calc_retail, axis=1)
-        df["Total Inventory Value"] = df["UnitCost"] * df["Quantity"]
+        df["Total Inventory Value"] = df["UnitCost"] * df["valuation_quantity"]
         df["Profit"] = df["Total Retail Value"] - df["Total Inventory Value"]
 
         # ========== 构建结果 ==========
@@ -79,10 +88,12 @@ def show_inventory(tx, inventory: pd.DataFrame):
             small_df = df[df["Item Name"].isin(selected_items)].copy()
             if not small_df.empty:
                 small_df = small_df[
-                    ["Item Name", "Item Variation Name", "GTIN", "SKU", "Quantity",
+                    ["Item Name", "Item Variation Name", "GTIN", "SKU", "valuation_quantity",
                      "Total Inventory Value", "Total Retail Value", "Profit"]
                 ]
                 small_df["Profit Margin"] = (small_df["Profit"] / small_df["Total Retail Value"] * 100).fillna(0)
+                # 重命名列以保持显示一致性
+                small_df = small_df.rename(columns={"valuation_quantity": "Quantity"})
                 results.append(small_df)
 
         # 2) bar 聚合 → 一行
@@ -94,7 +105,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
                     "Item Variation Name": "",
                     "GTIN": "",
                     "SKU": "",
-                    "Quantity": bar_df["Quantity"].sum(),
+                    "Quantity": bar_df["valuation_quantity"].sum(),  # ✅ 使用实际库存数量
                     "Total Inventory Value": bar_df["Total Inventory Value"].sum(),
                     "Total Retail Value": bar_df["Total Retail Value"].sum(),
                     "Profit": bar_df["Profit"].sum(),
@@ -118,7 +129,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
                     "Item Variation Name": "",
                     "GTIN": "",
                     "SKU": "",
-                    "Quantity": retail_df["Quantity"].sum(),
+                    "Quantity": retail_df["valuation_quantity"].sum(),  # ✅ 使用实际库存数量
                     "Total Inventory Value": retail_df["Total Inventory Value"].sum(),
                     "Total Retail Value": retail_df["Total Retail Value"].sum(),
                     "Profit": retail_df["Profit"].sum(),
@@ -145,7 +156,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
     else:
         st.info("Please select both Time Range and Category to view valuation table.")
 
-
     # ---- 1) Inventory Diagnosis: Restock / Clearance ----
     st.subheader("1) Inventory Diagnosis: Restock / Clearance Needed")
     qty_col = detect_store_current_qty_col(inv)
@@ -164,13 +174,15 @@ def show_inventory(tx, inventory: pd.DataFrame):
     else:
         inv["option_key"] = inv["display_name"]
 
+    # ✅ 修复：补货分析使用 restock_quantity（缺货数量的绝对值）
     # Items needing restock
-    need_restock = inv[inv[qty_col] < 0].copy()
+    need_restock = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) < 0].copy()
     if not need_restock.empty:
         options = sorted(need_restock["option_key"].unique())
         selected_items = st.multiselect("Search/Filter Items (Restock)", options, key="restock_filter")
         df_show = need_restock.copy()
-        df_show["restock_needed"] = df_show[qty_col].abs()
+        # ✅ 使用缺货数量的绝对值
+        df_show["restock_needed"] = pd.to_numeric(df_show[qty_col], errors="coerce").fillna(0).abs()
         if selected_items:
             selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]
             if selected_skus:
@@ -190,12 +202,13 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
     # Items needing clearance
     clear_threshold = 50
+    # ✅ 修复：清仓分析使用实际库存数量（≥0）
     need_clear = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) > clear_threshold].copy()
     if not need_clear.empty:
         options = sorted(need_clear["option_key"].unique())
         selected_items = st.multiselect("Search/Filter Items (Clearance)", options, key="clear_filter")
         df_clear = need_clear.copy()
-        df_clear["current_qty"] = pd.to_numeric(df_clear[qty_col], errors="coerce").fillna(0).abs()
+        df_clear["current_qty"] = pd.to_numeric(df_clear[qty_col], errors="coerce").fillna(0)
         if selected_items:
             selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]
             if selected_skus:
@@ -227,7 +240,8 @@ def show_inventory(tx, inventory: pd.DataFrame):
     )
 
     low = inv.copy()
-    low["current_qty"] = pd.to_numeric(low[qty_col], errors="coerce").fillna(0).abs()
+    # ✅ 修复：低库存警报使用实际库存数量
+    low["current_qty"] = pd.to_numeric(low[qty_col], errors="coerce").fillna(0).clip(lower=0)
     if threshold_col:
         low["alert_threshold"] = pd.to_numeric(low[threshold_col], errors="coerce").fillna(default_threshold)
     else:

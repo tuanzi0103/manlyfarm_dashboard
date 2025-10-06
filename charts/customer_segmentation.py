@@ -3,6 +3,7 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import re
 from services.analytics import (
     member_flagged_transactions,
     member_frequency_stats,
@@ -15,6 +16,37 @@ from services.analytics import (
     recommend_bundles_for_customer,
     churn_signals_for_member,
 )
+
+
+def format_phone_number(phone):
+    """
+    格式化手机号：移除61之前的所有字符，确保以61开头
+    """
+    if pd.isna(phone) or phone is None:
+        return ""
+
+    phone_str = str(phone).strip()
+
+    # 移除所有非数字字符
+    digits_only = re.sub(r'\D', '', phone_str)
+
+    # 查找61的位置
+    if '61' in digits_only:
+        # 找到61第一次出现的位置
+        start_index = digits_only.find('61')
+        # 返回从61开始的部分
+        formatted = digits_only[start_index:]
+
+        # 确保长度合理（手机号通常10-12位）
+        if len(formatted) >= 10 and len(formatted) <= 12:
+            return formatted
+        else:
+            # 如果长度不合适，返回原始数字
+            return digits_only
+    else:
+        # 如果没有61，返回原始数字
+        return digits_only
+
 
 def show_customer_segmentation(tx, members):
     st.header("👥 Customer Segmentation & Personalization")
@@ -71,7 +103,8 @@ def show_customer_segmentation(tx, members):
             st.plotly_chart(px.bar(top_items, x=item_col, y=qty_col,
                                    title="Prediction: What they will buy (Top 15)"), use_container_width=True)
         else:
-            top_items = df[item_col].value_counts().reset_index().rename(columns={"index": "Item", item_col: "Count"}).head(15)
+            top_items = df[item_col].value_counts().reset_index().rename(
+                columns={"index": "Item", item_col: "Count"}).head(15)
             st.plotly_chart(px.bar(top_items, x="Item", y="Count",
                                    title="Prediction: What they will buy (Top 15)"), use_container_width=True)
 
@@ -115,13 +148,17 @@ def show_customer_segmentation(tx, members):
                       .drop_duplicates("Customer ID"))
         phones_map["Customer ID"] = phones_map["Customer ID"].astype(str)
 
+        # ✅ 格式化手机号：移除61之前的所有字符
+        phones_map["Phone"] = phones_map["Phone"].apply(format_phone_number)
+
         risky = (churn_tag.assign(**{"Customer ID": churn_tag["Customer ID"].astype(str)})
                  .merge(names_map, on="Customer ID", how="left")
                  .merge(phones_map, on="Customer ID", how="left"))
 
         st.subheader("Top 20: Regulars who **didn't come last month**")
-        st.dataframe(risky[["Customer Name", "Customer ID", "Phone", "avg_visits_per_month_excl_last", "visits_last_month"]],
-                     use_container_width=True)
+        st.dataframe(
+            risky[["Customer Name", "Customer ID", "Phone", "avg_visits_per_month_excl_last", "visits_last_month"]],
+            use_container_width=True)
 
     st.divider()
 
@@ -165,13 +202,13 @@ def show_customer_segmentation(tx, members):
         base["_hour"] = base["_date"].dt.hour
         base["_dow"] = base["_date"].dt.day_name()
         if metric == "net sales" and net_col:
-            agg = base.groupby(["_dow","_hour"])[net_col].sum().reset_index(name="value")
+            agg = base.groupby(["_dow", "_hour"])[net_col].sum().reset_index(name="value")
         else:
             txn_col2 = "Transaction ID" if "Transaction ID" in base.columns else None
             if txn_col2:
-                agg = base.groupby(["_dow","_hour"])[txn_col2].nunique().reset_index(name="value")
+                agg = base.groupby(["_dow", "_hour"])[txn_col2].nunique().reset_index(name="value")
             else:
-                agg = base.groupby(["_dow","_hour"]).size().reset_index(name="value")
+                agg = base.groupby(["_dow", "_hour"]).size().reset_index(name="value")
         pv = agg.pivot(index="_dow", columns="_hour", values="value").fillna(0)
         st.plotly_chart(px.imshow(pv, aspect="auto", title=f"Heatmap by {metric.title()} (Hour x Day)"),
                         use_container_width=True)

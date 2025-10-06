@@ -13,17 +13,20 @@ FORECAST_WEEKS = 3  # 预测3周
 MIN_SERIES_LEN_FOR_HOLT = 10
 RECENT_DAYS_FOR_VELOCITY = 30
 
+
 # ==================== 小工具 ====================
 def _persisting_multiselect(label, options, key):
     if key not in st.session_state:
         st.session_state[key] = []
     return st.multiselect(label, options=options, default=st.session_state[key], key=key)
 
+
 def _item_col(df: pd.DataFrame) -> str:
     for c in ["Item", "Item Name", "Variation Name"]:
         if c in df.columns:
             return c
     return df.columns[0]
+
 
 def _category_col(df: pd.DataFrame) -> str | None:
     for c in ["Category", "Categories", "Category Name", "Category (Top Level)",
@@ -32,11 +35,13 @@ def _category_col(df: pd.DataFrame) -> str | None:
             return c
     return None
 
+
 def _order_key_cols(df: pd.DataFrame):
     for col in ["Order ID", "Receipt ID", "Txn ID", "Transaction ID"]:
         if col in df.columns:
             return col
     return None
+
 
 def _format_dmy(x):
     if pd.isna(x) or x is None or str(x).strip() in ["", "0"]:
@@ -44,8 +49,10 @@ def _format_dmy(x):
     d = pd.to_datetime(x, errors="coerce")
     return "" if pd.isna(d) else d.strftime("%d/%m/%Y")
 
+
 def _norm(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.lower()
+
 
 # ==================== 组合建议 ====================
 def _build_category_pairs_by_order(df: pd.DataFrame, cat_col: str) -> pd.DataFrame:
@@ -80,6 +87,7 @@ def _build_category_pairs_by_order(df: pd.DataFrame, cat_col: str) -> pd.DataFra
                          columns=["a", "b", "count"])
             .sort_values("count", ascending=False))
 
+
 def _strategy_suggestions_by_category(df: pd.DataFrame, top_pairs: int = 6, slow_k: int = 6) -> dict:
     if df.empty:
         return {"popular_popular": [], "popular_slow": [], "discount_slow": []}
@@ -103,7 +111,7 @@ def _strategy_suggestions_by_category(df: pd.DataFrame, top_pairs: int = 6, slow
 
     q75, q25 = cat_cnt["qty"].quantile(0.75), cat_cnt["qty"].quantile(0.25)
     popular = cat_cnt[cat_cnt["qty"] >= q75][cat_col].astype(str).tolist()
-    slow    = cat_cnt[cat_cnt["qty"] <= q25][cat_col].astype(str).tolist()
+    slow = cat_cnt[cat_cnt["qty"] <= q25][cat_col].astype(str).tolist()  # 修复语法错误
 
     pairs = _build_category_pairs_by_order(df, cat_col)
 
@@ -125,6 +133,7 @@ def _strategy_suggestions_by_category(df: pd.DataFrame, top_pairs: int = 6, slow
 
     return {"popular_popular": pp, "popular_slow": ps, "discount_slow": slow[:slow_k]}
 
+
 # ==================== 历史序列 & 预测 ====================
 def _weekly_category_revenue(df: pd.DataFrame, categories: list) -> pd.DataFrame:
     if "Net Sales" not in df.columns or "Datetime" not in df.columns:
@@ -142,7 +151,9 @@ def _weekly_category_revenue(df: pd.DataFrame, categories: list) -> pd.DataFrame
     return (sub.groupby("date")["Net Sales"].sum().reset_index(name="value")
             .sort_values("date"))
 
+
 from sklearn.metrics import mean_absolute_percentage_error
+
 
 def _holt_weekly_forecast(series_df: pd.DataFrame, forecast_weeks: int = FORECAST_WEEKS):
     if series_df.empty:
@@ -155,7 +166,7 @@ def _holt_weekly_forecast(series_df: pd.DataFrame, forecast_weeks: int = FORECAS
         const = float(s.tail(4).mean()) if not s.empty else 0.0
         fut_idx = pd.date_range(start=(s.index.max() if len(s) else pd.Timestamp.today()) + pd.Timedelta(weeks=1),
                                 periods=forecast_weeks, freq="W")
-        return pd.DataFrame({"date": fut_idx.date, "yhat": [const]*forecast_weeks}), 0.0
+        return pd.DataFrame({"date": fut_idx.date, "yhat": [const] * forecast_weeks}), 0.0
 
     try:
         # ⚡ 用月度季节性（4 周一个周期）
@@ -166,7 +177,8 @@ def _holt_weekly_forecast(series_df: pd.DataFrame, forecast_weeks: int = FORECAS
         split_point = int(len(s) * 0.8)
         train, test = s.iloc[:split_point], s.iloc[split_point:]
         if len(test) > 0:
-            model_val = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=4, damped_trend=True).fit()
+            model_val = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=4,
+                                             damped_trend=True).fit()
             pred = model_val.forecast(len(test))
             mape = 1 - mean_absolute_percentage_error(test, pred)
         else:
@@ -184,8 +196,9 @@ def _holt_weekly_forecast(series_df: pd.DataFrame, forecast_weeks: int = FORECAS
             return pd.DataFrame({"date": fut.index.date, "yhat": fut.values}), 0.0
         except Exception:
             const = float(s.tail(4).mean()) if not s.empty else 0.0
-            fut_idx = pd.date_range(start=s.index.max()+pd.Timedelta(weeks=1), periods=forecast_weeks, freq="W")
-            return pd.DataFrame({"date": fut_idx.date, "yhat": [const]*forecast_weeks}), 0.0
+            fut_idx = pd.date_range(start=s.index.max() + pd.Timedelta(weeks=1), periods=forecast_weeks, freq="W")
+            return pd.DataFrame({"date": fut_idx.date, "yhat": [const] * forecast_weeks}), 0.0
+
 
 # ==================== 缓存 ====================
 @st.cache_data(show_spinner=False, persist=True)
@@ -195,6 +208,7 @@ def _precompute(tx):
     tx["date"] = tx["Datetime"].dt.date
     return tx
 
+
 @st.cache_data(show_spinner=False, persist=True)
 def load_inventory():
     conn = get_db()
@@ -203,11 +217,13 @@ def load_inventory():
     except Exception:
         return pd.DataFrame()
 
+
 @st.cache_data(show_spinner=False, persist=True)
 def compute_combo_forecast_category(tx, combo):
     cats = [s.strip() for s in str(combo).split("+") if s and s.strip()]
     series = _weekly_category_revenue(tx, cats)
     return _holt_weekly_forecast(series, forecast_weeks=FORECAST_WEEKS)
+
 
 # ==================== 页面入口 ====================
 def show_product_mix_only(tx: pd.DataFrame):
@@ -219,7 +235,7 @@ def show_product_mix_only(tx: pd.DataFrame):
 
     # 🔹 统一 Datetime/date 类型为 Timestamp
     tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
-    tx["date"] = tx["Datetime"].dt.normalize()   # 保持 Timestamp，不转成 date
+    tx["date"] = tx["Datetime"].dt.normalize()  # 保持 Timestamp，不转成 date
 
     # --------- 建议 ---------
     st.subheader("💡 Discount Forecast Suggestions")
@@ -257,16 +273,17 @@ def show_product_mix_only(tx: pd.DataFrame):
         return
 
     inv_key = "Item Name" if "Item Name" in inv.columns else None
-    tx_key  = "Item" if "Item" in tx.columns else None
+    tx_key = "Item" if "Item" in tx.columns else None
     if not inv_key or not tx_key:
         st.info("Cannot align items between inventory and transactions.")
         return
 
     inv[inv_key] = _norm(inv[inv_key])
-    tx[tx_key]   = _norm(tx[tx_key])
+    tx[tx_key] = _norm(tx[tx_key])
 
     sold = tx.groupby(tx_key, as_index=False)["Qty"].sum().rename(columns={"Qty": "Sold"})
-    last_sold = tx.dropna(subset=["Datetime"]).groupby(tx_key, as_index=False)["Datetime"].max().rename(columns={"Datetime": "Last sold"})
+    last_sold = tx.dropna(subset=["Datetime"]).groupby(tx_key, as_index=False)["Datetime"].max().rename(
+        columns={"Datetime": "Last sold"})
 
     df = inv.copy()
     out = pd.DataFrame({
@@ -287,36 +304,60 @@ def show_product_mix_only(tx: pd.DataFrame):
     out = out.merge(sold, left_on="Item Name", right_on=tx_key, how="left")
     out = out.merge(last_sold, left_on="Item Name", right_on=tx_key, how="left")
 
-    # === Sell-through 百分比 ===
+    # === 修复售罄率计算 ===
     sold_num = pd.to_numeric(out.get("Sold", np.nan), errors="coerce").fillna(0)
-    onh_num  = pd.to_numeric(out.get("On hand", np.nan), errors="coerce").fillna(0)
-    ratio = sold_num / np.maximum(1e-9, sold_num + onh_num)
-    out["Sell-through"] = (ratio * 100).round(0).astype(int).astype(str) + "%"
+    onh_num = pd.to_numeric(out.get("On hand", np.nan), errors="coerce").fillna(0)
 
-    # === Velocity & Out of stock ===
+    # ✅ 修复：负库存取绝对值
+    onh_num_abs = onh_num.abs()
+
+    # ✅ 修复：正确的售罄率计算公式
+    # 售罄率 = 已售数量 / (已售数量 + 当前库存) * 100
+    total_available = sold_num + onh_num_abs
+    # 避免除零错误
+    sell_through_ratio = np.where(total_available > 0, sold_num / total_available * 100, 0)
+
+    # ✅ 修复：使用 pandas Series 进行字符串操作
+    sell_through_rounded = pd.Series(sell_through_ratio.round(0).astype(int), index=out.index)
+    out["Sell-through"] = sell_through_rounded.astype(str) + "%"
+
+    # === 修复销售速度预测 ===
     today = pd.Timestamp.today().normalize()
-    cutoff = today - pd.Timedelta(days=30)
+    cutoff = today - pd.Timedelta(days=RECENT_DAYS_FOR_VELOCITY)
 
-    # 过去30天销量 → 日均销量（保证都是 Timestamp）
-    daily_sales = (
+    # ✅ 修复：直接使用30天总销量作为月销量，避免逻辑循环
+    monthly_sales_dict = (
         tx[tx["date"] >= cutoff]
-        .groupby(tx_key)["Qty"].sum() / 30
+        .groupby(tx_key)["Qty"].sum()
     ).to_dict()
 
     def calc_velocity(item):
-        v_day = daily_sales.get(item, 0)
-        return int(round(v_day * 30))  # 转 per month
+        # ✅ 修复：直接返回30天总销量
+        return int(monthly_sales_dict.get(item, 0))
 
+    # === 修复缺货日期计算 ===
     def calc_out_of_stock(row):
         onhand = pd.to_numeric(row["On hand"], errors="coerce")
-        v_day = daily_sales.get(row["Item Name"], 0)
-        if pd.isna(onhand) or onhand <= 0:
-            return today.strftime("%d/%m/%Y")
-        if v_day > 0:
-            days_left = int(onhand / v_day)
-            return (today + pd.Timedelta(days=days_left)).strftime("%d/%m/%Y")
-        return ""
+        monthly_sales = monthly_sales_dict.get(row["Item Name"], 0)
 
+        # 计算日均销量（用于预测）
+        daily_sales = monthly_sales / RECENT_DAYS_FOR_VELOCITY if monthly_sales > 0 else 0
+
+        if pd.isna(onhand) or onhand <= 0:
+            return today.strftime("%d/%m/%Y") + " (out of stock)"
+
+        if daily_sales > 0:
+            days_left = int(onhand / daily_sales)
+            # 考虑安全库存（假设3天安全库存）
+            safe_stock_days = 3
+            if days_left <= safe_stock_days:
+                return today.strftime("%d/%m/%Y") + " (need restock)"
+            else:
+                return (today + pd.Timedelta(days=days_left - safe_stock_days)).strftime("%d/%m/%Y")
+        else:
+            return "no sale records"
+
+    # ✅ 修复：使用 pandas apply 方法
     out["Sales velocity"] = out["Item Name"].apply(calc_velocity).astype(str) + " per month"
     out["Out of stock"] = out.apply(calc_out_of_stock, axis=1)
 
@@ -324,7 +365,8 @@ def show_product_mix_only(tx: pd.DataFrame):
     lr_col = None
     for c in inv.columns:
         cl = c.lower().strip()
-        if cl in {"last received", "last_received"} or re.search(r"last.*receiv", cl) or re.search(r"(received.*date|date.*received)", cl):
+        if cl in {"last received", "last_received"} or re.search(r"last.*receiv", cl) or re.search(
+                r"(received.*date|date.*received)", cl):
             lr_col = c
             break
     out["Last received"] = inv[lr_col] if lr_col else ""
@@ -337,4 +379,5 @@ def show_product_mix_only(tx: pd.DataFrame):
     show_cols = ["Item Name", "Variation Name", "GTIN", "SKU",
                  "Sell-through", "On hand", "Sold", "Sales velocity",
                  "Last sold", "Last received", "Out of stock"]
+
     st.dataframe(out[show_cols], use_container_width=True)
