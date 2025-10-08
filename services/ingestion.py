@@ -230,7 +230,6 @@ def _delete_overlapping_dates(conn, table: str, start_date, end_date, filename: 
             delete_query = "DELETE FROM transactions WHERE date >= ? AND date <= ?"
             conn.execute(delete_query, (start_date, end_date))
             conn.commit()
-            st.sidebar.info(f"🔄 Replacing data for {start_date} to {end_date} from {filename}")
             return True
     except Exception as e:
         st.sidebar.warning(f"Warning deleting overlapping data: {e}")
@@ -370,21 +369,18 @@ def ingest_from_drive_all():
                                        key_candidates=["Transaction ID", "Item", "Price", "Modifiers Applied"],
                                        prefer_real={"Net Sales", "Gross Sales", "Qty", "Discounts"},
                                        filename=name)
-            st.sidebar.info(f"📊 Processed {name}: {imported_count} transactions")
 
         elif "catalogue" in name.lower():
             df = preprocess_inventory(df, filename=name)
             imported_count = _write_df(conn, df, "inventory",
                                        key_candidates=["SKU"], prefer_real=set(),
                                        filename=name)
-            st.sidebar.info(f"📦 Processed {name}: {imported_count} inventory items")
 
         elif "member" in name.lower():
             df = preprocess_members(df)
             imported_count = _write_df(conn, df, "members",
                                        key_candidates=["Square Customer ID", "Reference ID"],
                                        prefer_real=set(), filename=name)
-            st.sidebar.info(f"👥 Processed {name}: {imported_count} members")
 
         total_imported += imported_count
 
@@ -395,7 +391,6 @@ def ingest_from_drive_all():
 
     ensure_indexes()
     if total_imported > 0:
-        st.sidebar.success(f"✅ Imported {total_imported} total records from Google Drive")
 
 
 @st.cache_data(show_spinner=False)
@@ -411,7 +406,6 @@ def init_db_from_drive_once():
 def ingest_csv(uploaded_file):
     conn = get_db()
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.csv"
-    st.sidebar.info(f"📂 Importing {filename}")
 
     df = pd.read_csv(uploaded_file)
     df = _fix_header(df)
@@ -424,21 +418,18 @@ def ingest_csv(uploaded_file):
                                        key_candidates=["Transaction ID"],
                                        prefer_real={"Net Sales", "Gross Sales", "Qty", "Discounts"},
                                        filename=filename)
-            st.sidebar.success(f"✅ Imported {imported_count} rows (transactions)")
 
         elif "SKU" in df.columns or "Stock on Hand" in df.columns or "Categories" in df.columns:
             df = preprocess_inventory(df, filename=filename)
             imported_count = _write_df(conn, df, "inventory",
                                        key_candidates=["SKU"], prefer_real=set(),
                                        filename=filename)
-            st.sidebar.success(f"✅ Imported {imported_count} rows (inventory)")
 
         elif "Square Customer ID" in df.columns or "First Name" in df.columns or "member" in filename.lower():
             df = preprocess_members(df)
             imported_count = _write_df(conn, df, "members",
                                        key_candidates=["Square Customer ID", "Reference ID"],
                                        prefer_real=set(), filename=filename)
-            st.sidebar.success(f"✅ Imported {imported_count} rows (members)")
 
         else:
             st.sidebar.warning(f"⚠️ Skipped {filename}, schema not recognized")
@@ -464,7 +455,6 @@ def ingest_csv(uploaded_file):
 def ingest_excel(uploaded_file):
     conn = get_db()
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.xlsx"
-    st.sidebar.info(f"📂 Importing {filename}")
 
     data = uploaded_file.read()
     xls = pd.ExcelFile(BytesIO(data))
@@ -497,8 +487,6 @@ def ingest_excel(uploaded_file):
                                            prefer_real=set(), filename=filename)
 
             total_imported += imported_count
-
-        st.sidebar.success(f"✅ {filename} imported: {total_imported} total records")
 
         tmp_path = os.path.join(tempfile.gettempdir(), filename)
         with open(tmp_path, "wb") as f_local:
