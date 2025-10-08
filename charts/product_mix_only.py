@@ -3,7 +3,17 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 import re
+from typing import Optional
 from itertools import combinations
+# === 控制多选框下拉高度（兼容 Streamlit 1.50） ===
+st.markdown("""
+<style>
+div[data-baseweb="popover"] ul {
+    max-height: 6em !important;  /* 约显示3条 */
+    overflow-y: auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 from services.db import get_db
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -28,7 +38,7 @@ def _item_col(df: pd.DataFrame) -> str:
     return df.columns[0]
 
 
-def _category_col(df: pd.DataFrame) -> str | None:
+def _category_col(df: pd.DataFrame) -> Optional[str]:
     for c in ["Category", "Categories", "Category Name", "Category (Top Level)",
               "Reporting Category", "Department"]:
         if c in df.columns:

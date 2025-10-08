@@ -3,6 +3,16 @@ import plotly.express as px
 import pandas as pd
 from typing import Optional
 
+# === 控制多选框下拉高度（兼容 Streamlit 1.50） ===
+st.markdown("""
+<style>
+div[data-baseweb="popover"] ul {
+    max-height: 6em !important;  /* 约显示3条 */
+    overflow-y: auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 from services.analytics import (
     forecast_top_consumers,
     sku_consumption_timeseries,

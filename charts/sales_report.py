@@ -5,7 +5,6 @@ import numpy as np
 from datetime import datetime, timedelta
 import math
 
-
 def proper_round(x):
     """标准的四舍五入方法，0.5总是向上舍入"""
     if pd.isna(x):
@@ -211,6 +210,15 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Retail table + Multiselect ----------------
     st.subheader("📊 Retail Categories")
+    st.markdown("""
+    <style>
+    /* 控制 multiselect 下拉选项的最大显示高度（新版结构） */
+    div[data-baseweb="popover"] ul {
+        max-height: 6em !important;  /* 大约显示3条 */
+        overflow-y: auto !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     all_retail_cats = sorted(df[df["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
     sel_retail_cats = persisting_multiselect("Select Retail Categories", all_retail_cats, key="sr_retail_cats")
 

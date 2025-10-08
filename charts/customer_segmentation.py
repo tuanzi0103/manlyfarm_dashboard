@@ -1,6 +1,8 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
+# === 控制多选框下拉高度（兼容 Streamlit 1.50） ===
+
 import numpy as np
 from datetime import datetime, timedelta
 import re
@@ -16,7 +18,6 @@ from services.analytics import (
     recommend_bundles_for_customer,
     churn_signals_for_member,
 )
-
 
 def format_phone_number(phone):
     """
@@ -172,6 +173,15 @@ def show_customer_segmentation(tx, members):
         options["Customer ID"] = options["Customer ID"].astype(str)
         options = options.to_dict(orient="records")
 
+    st.markdown("""
+    <style>
+    /* 控制 multiselect 下拉选项的最大显示高度（新版结构） */
+    div[data-baseweb="popover"] ul {
+        max-height: 6em !important;  /* 大约显示3条 */
+        overflow-y: auto !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     sel_ids = st.multiselect(
         "🔎 Search customers by name (multi-select)",
         options=[opt["Customer ID"] for opt in options],

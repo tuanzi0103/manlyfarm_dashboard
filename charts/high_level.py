@@ -117,14 +117,48 @@ def get_high_level_data():
     ORDER BY date, Category;
     """
 
+    # 新增：获取客户数量的 SQL 查询
+    customers_sql = """
+    WITH cleaned AS (
+        SELECT 
+            date(Datetime) AS date,
+            [Transaction ID] AS txn_id,
+            CASE 
+                WHEN [Customer ID] IS NULL OR TRIM([Customer ID]) = '' 
+                THEN 'anon_' || [Transaction ID] 
+                ELSE TRIM([Customer ID]) 
+            END AS customer_key
+        FROM transactions
+    ),
+    unique_customers AS (
+        SELECT 
+            date,
+            COUNT(DISTINCT customer_key) AS unique_customers
+        FROM cleaned
+        GROUP BY date
+    )
+    SELECT
+        date,
+        unique_customers
+    FROM unique_customers
+    ORDER BY date;
+    """
+
     daily = pd.read_sql(daily_sql, db)
     category = pd.read_sql(category_sql, db)
+    customers_df = pd.read_sql(customers_sql, db)
 
     if not daily.empty:
         daily["date"] = pd.to_datetime(daily["date"])
 
     if not category.empty:
         category["date"] = pd.to_datetime(category["date"])
+
+    if not customers_df.empty:
+        customers_df["date"] = pd.to_datetime(customers_df["date"])
+        # 将客户数据合并到 daily 数据中
+        daily = daily.merge(customers_df, on="date", how="left")
+        daily["unique_customers"] = daily["unique_customers"].fillna(0)
 
     return daily, category
 
@@ -202,6 +236,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     kpis_main = {
         "Daily Net Sales": proper_round(df_selected_date["net_sales_with_tax"].sum()),
         "Daily Transactions": df_selected_date["transactions"].sum(),
+        "Number of Customers": df_selected_date[
+            "unique_customers"].sum() if "unique_customers" in df_selected_date.columns else 0,
         "Avg Transaction": df_selected_date["avg_txn"].mean(),
         "3M Avg": proper_round(daily["net_sales_with_tax"].rolling(90, min_periods=1).mean().iloc[-1]),
         "6M Avg": proper_round(daily["net_sales_with_tax"].rolling(180, min_periods=1).mean().iloc[-1]),
@@ -236,7 +272,14 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 if pd.isna(val):
                     display = "-"
                 else:
-                    display = f"${proper_round(val):,}"
+                    # 对于Daily Transactions、Number of Customers和Items Sold，去掉前面的$符号
+                    if label in ["Daily Transactions", "Number of Customers", "Items Sold"]:
+                        display = f"{proper_round(val):,}"
+                    # 对于Avg Transaction，保留两位小数
+                    elif label == "Avg Transaction":
+                        display = f"${val:.2f}"
+                    else:
+                        display = f"${proper_round(val):,}"
                 with col:
                     st.markdown(f"<div style='font-size:28px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
                     st.caption(label)
@@ -247,6 +290,17 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # === 交互选择 ===
     st.subheader("🔍 Select Parameters")
+
+    # 添加 CSS 来限制多选框高度（兼容 Streamlit 1.50）
+    st.markdown("""
+    <style>
+    /* 控制 multiselect 下拉选项的最大显示高度（新版结构） */
+    div[data-baseweb="popover"] ul {
+        max-height: 6em !important;  /* 大约显示3条 */
+        overflow-y: auto !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     # Time range 选择 - 独立处理
     time_range_options = ["Custom dates", "WTD", "MTD", "YTD"]
@@ -266,7 +320,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             t2 = st.date_input("To", value=today)
 
     data_options = [
-        "Daily Net Sales", "Daily Transactions", "Avg Transaction", "3M Avg", "6M Avg",
+        "Daily Net Sales", "Daily Transactions", "Number of Customers", "Avg Transaction", "3M Avg", "6M Avg",
         "Inventory Value", "Profit (Amount)", "Items Sold"
     ]
     data_sel = persisting_multiselect("Choose data type", data_options, key="hl_data")
@@ -279,7 +333,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         return
 
     all_cats_tx = sorted(category_tx["Category"].fillna("Unknown").unique().tolist())
-    all_cats_extended = sorted(set(all_cats_tx + ["bar", "retail"]))
+    # 将bar和retail放在最前面
+    all_cats_extended = ["bar", "retail"] + sorted(set(all_cats_tx) - {"bar", "retail"})
     cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats")
 
     # 只要有time range选择就继续，不强制三个都有值
@@ -450,6 +505,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         mapping_tx = {
             "Daily Net Sales": ("net_sales_with_tax", "Daily Net Sales"),
             "Daily Transactions": ("transactions", "Daily Transactions"),
+            "Number of Customers": ("transactions", "Number of Customers"),  # 注意：这里需要从daily数据获取
             "Avg Transaction": ("avg_txn", "Avg Transaction"),
             "3M Avg": ("net_sales_with_tax", "3M Avg (Rolling 90d)"),
             "6M Avg": ("net_sales_with_tax", "6M Avg (Rolling 180d)"),
@@ -463,19 +519,45 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         for metric in data_sel:
             if metric in mapping_tx:
                 y, title = mapping_tx[metric]
-                plot_df = grouped_tx.dropna(subset=[y]).copy()
-                if metric in ["3M Avg", "6M Avg"]:
-                    if metric == "3M Avg":
-                        plot_df["rolling"] = plot_df.groupby("Category")[y].transform(
-                            lambda x: x.rolling(90, min_periods=1).mean())
+
+                # 对于Number of Customers，需要从daily数据获取
+                if metric == "Number of Customers":
+                    daily_filtered = daily.copy()
+                    # 应用相同的时间范围筛选
+                    if "WTD" in time_range:
+                        daily_filtered = daily_filtered[daily_filtered["date"] >= today - pd.Timedelta(days=7)]
+                    if "MTD" in time_range:
+                        daily_filtered = daily_filtered[daily_filtered["date"] >= today - pd.Timedelta(days=30)]
+                    if "YTD" in time_range:
+                        daily_filtered = daily_filtered[daily_filtered["date"] >= today - pd.Timedelta(days=365)]
+                    if custom_dates_selected and t1 and t2:
+                        daily_filtered = daily_filtered[
+                            (daily_filtered["date"] >= pd.to_datetime(t1)) & (
+                                        daily_filtered["date"] <= pd.to_datetime(t2))]
+
+                    # 创建客户数据图表
+                    if "unique_customers" in daily_filtered.columns:
+                        fig = px.line(daily_filtered, x="date", y="unique_customers", title=title, markers=True)
+                        fig.update_layout(xaxis=dict(type="date"))
+                        st.plotly_chart(fig, use_container_width=True)
                     else:
-                        plot_df["rolling"] = plot_df.groupby("Category")[y].transform(
-                            lambda x: x.rolling(180, min_periods=1).mean())
-                    fig = px.line(plot_df, x="date", y="rolling", color="Category", title=title, markers=True)
+                        st.info("No customer data available.")
                 else:
-                    fig = px.line(plot_df, x="date", y=y, color="Category", title=title, markers=True)
-                fig.update_layout(xaxis=dict(type="date"))
-                st.plotly_chart(fig, use_container_width=True)
+                    # 在显示时过滤掉total类别
+                    plot_df = grouped_tx[grouped_tx["Category"] != "total"].dropna(subset=[y]).copy()
+
+                    if metric in ["3M Avg", "6M Avg"]:
+                        if metric == "3M Avg":
+                            plot_df["rolling"] = plot_df.groupby("Category")[y].transform(
+                                lambda x: x.rolling(90, min_periods=1).mean())
+                        else:
+                            plot_df["rolling"] = plot_df.groupby("Category")[y].transform(
+                                lambda x: x.rolling(180, min_periods=1).mean())
+                        fig = px.line(plot_df, x="date", y="rolling", color="Category", title=title, markers=True)
+                    else:
+                        fig = px.line(plot_df, x="date", y=y, color="Category", title=title, markers=True)
+                    fig.update_layout(xaxis=dict(type="date"))
+                    st.plotly_chart(fig, use_container_width=True)
 
             elif metric in mapping_inv:
                 y, title = mapping_inv[metric]
@@ -493,9 +575,13 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         if not grouped_tx.empty:
             cols_tx = ["date", "Category"]
             for sel in data_sel:
-                if sel in mapping_tx:
+                if sel in mapping_tx and sel != "Number of Customers":  # 排除Number of Customers
                     cols_tx.append(mapping_tx[sel][0])
             table_tx = grouped_tx[cols_tx].copy()
+
+            # 在显示时过滤掉total类别
+            table_tx = table_tx[table_tx["Category"] != "total"]
+
             # 使用标准的四舍五入方法
             for col in table_tx.columns:
                 if col in ["net_sales_with_tax", "avg_txn", "net_sales"]:
@@ -514,6 +600,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 if sel in mapping_inv:
                     cols_inv.append(mapping_inv[sel][0])
             table_inv = grouped_inv[cols_inv].copy()
+
             # 使用标准的四舍五入方法
             for col in table_inv.columns:
                 if col in ["Inventory Value", "Profit"]:
