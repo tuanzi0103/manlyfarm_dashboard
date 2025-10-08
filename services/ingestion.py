@@ -61,7 +61,7 @@ def upload_file_to_drive(local_path: str, remote_name: str):
         f.Upload()
     except Exception as e:
         # 上传失败不影响主流程
-        st.sidebar.warning(f"⚠️ Upload to Drive failed: {e}")
+        pass
 
 
 def download_file_from_drive(file_id, local_path):
@@ -218,7 +218,7 @@ def _get_existing_date_ranges(conn, table: str):
             if result and result[0] and result[1]:
                 return pd.to_datetime(result[0]).date(), pd.to_datetime(result[1]).date()
     except Exception as e:
-        st.sidebar.warning(f"Warning getting date ranges: {e}")
+        pass
     return None, None
 
 
@@ -230,10 +230,9 @@ def _delete_overlapping_dates(conn, table: str, start_date, end_date, filename: 
             delete_query = "DELETE FROM transactions WHERE date >= ? AND date <= ?"
             conn.execute(delete_query, (start_date, end_date))
             conn.commit()
-            st.sidebar.info(f"🔄 Replacing data for {start_date} to {end_date} from {filename}")
             return True
     except Exception as e:
-        st.sidebar.warning(f"Warning deleting overlapping data: {e}")
+        pass
     return False
 
 
@@ -249,7 +248,6 @@ def _smart_deduplicate_transactions(df: pd.DataFrame, conn, filename: str):
         # 如果无法从文件名提取日期范围，使用数据中的实际日期范围
         file_start_date = df["date"].min()
         file_end_date = df["date"].max()
-        st.sidebar.info(f"📅 Using data date range: {file_start_date} to {file_end_date}")
 
     if file_start_date and file_end_date:
         # 删除该日期范围内的现有数据
@@ -259,7 +257,6 @@ def _smart_deduplicate_transactions(df: pd.DataFrame, conn, filename: str):
         return df
     else:
         # 回退到原来的去重逻辑
-        st.sidebar.warning("⚠️ Could not determine date range, using fallback deduplication")
         return _deduplicate(df, ["Transaction ID", "date"], conn, "transactions")
 
 
@@ -370,21 +367,18 @@ def ingest_from_drive_all():
                                        key_candidates=["Transaction ID", "Item", "Price", "Modifiers Applied"],
                                        prefer_real={"Net Sales", "Gross Sales", "Qty", "Discounts"},
                                        filename=name)
-            st.sidebar.info(f"📊 Processed {name}: {imported_count} transactions")
 
         elif "catalogue" in name.lower():
             df = preprocess_inventory(df, filename=name)
             imported_count = _write_df(conn, df, "inventory",
                                        key_candidates=["SKU"], prefer_real=set(),
                                        filename=name)
-            st.sidebar.info(f"📦 Processed {name}: {imported_count} inventory items")
 
         elif "member" in name.lower():
             df = preprocess_members(df)
             imported_count = _write_df(conn, df, "members",
                                        key_candidates=["Square Customer ID", "Reference ID"],
                                        prefer_real=set(), filename=name)
-            st.sidebar.info(f"👥 Processed {name}: {imported_count} members")
 
         total_imported += imported_count
 
@@ -394,8 +388,7 @@ def ingest_from_drive_all():
             pass
 
     ensure_indexes()
-    if total_imported > 0:
-        st.sidebar.success(f"✅ Imported {total_imported} total records from Google Drive")
+    return True
 
 
 @st.cache_data(show_spinner=False)
@@ -403,7 +396,7 @@ def init_db_from_drive_once():
     try:
         ingest_from_drive_all()
     except Exception as e:
-        st.sidebar.warning(f"⚠️ Auto-ingest from Drive failed: {e}")
+        pass
     return True
 
 
@@ -411,7 +404,6 @@ def init_db_from_drive_once():
 def ingest_csv(uploaded_file):
     conn = get_db()
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.csv"
-    st.sidebar.info(f"📂 Importing {filename}")
 
     df = pd.read_csv(uploaded_file)
     df = _fix_header(df)
@@ -424,24 +416,18 @@ def ingest_csv(uploaded_file):
                                        key_candidates=["Transaction ID"],
                                        prefer_real={"Net Sales", "Gross Sales", "Qty", "Discounts"},
                                        filename=filename)
-            st.sidebar.success(f"✅ Imported {imported_count} rows (transactions)")
 
         elif "SKU" in df.columns or "Stock on Hand" in df.columns or "Categories" in df.columns:
             df = preprocess_inventory(df, filename=filename)
             imported_count = _write_df(conn, df, "inventory",
                                        key_candidates=["SKU"], prefer_real=set(),
                                        filename=filename)
-            st.sidebar.success(f"✅ Imported {imported_count} rows (inventory)")
 
         elif "Square Customer ID" in df.columns or "First Name" in df.columns or "member" in filename.lower():
             df = preprocess_members(df)
             imported_count = _write_df(conn, df, "members",
                                        key_candidates=["Square Customer ID", "Reference ID"],
                                        prefer_real=set(), filename=filename)
-            st.sidebar.success(f"✅ Imported {imported_count} rows (members)")
-
-        else:
-            st.sidebar.warning(f"⚠️ Skipped {filename}, schema not recognized")
 
         tmp_path = os.path.join(tempfile.gettempdir(), filename)
         with open(tmp_path, "wb") as f_local:
@@ -464,7 +450,6 @@ def ingest_csv(uploaded_file):
 def ingest_excel(uploaded_file):
     conn = get_db()
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.xlsx"
-    st.sidebar.info(f"📂 Importing {filename}")
 
     data = uploaded_file.read()
     xls = pd.ExcelFile(BytesIO(data))
@@ -497,8 +482,6 @@ def ingest_excel(uploaded_file):
                                            prefer_real=set(), filename=filename)
 
             total_imported += imported_count
-
-        st.sidebar.success(f"✅ {filename} imported: {total_imported} total records")
 
         tmp_path = os.path.join(tempfile.gettempdir(), filename)
         with open(tmp_path, "wb") as f_local:
