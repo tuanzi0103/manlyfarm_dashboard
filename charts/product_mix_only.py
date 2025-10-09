@@ -3,17 +3,8 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 import re
-from typing import Optional
 from itertools import combinations
-# === 控制多选框下拉高度（兼容 Streamlit 1.50） ===
-st.markdown("""
-<style>
-div[data-baseweb="popover"] ul {
-    max-height: 6em !important;  /* 约显示3条 */
-    overflow-y: auto !important;
-}
-</style>
-""", unsafe_allow_html=True)
+from typing import Optional
 
 from services.db import get_db
 from statsmodels.tsa.holtwinters import ExponentialSmoothing

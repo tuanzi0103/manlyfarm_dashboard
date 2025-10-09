@@ -3,21 +3,29 @@ import plotly.express as px
 import pandas as pd
 from typing import Optional
 
-# === 控制多选框下拉高度（兼容 Streamlit 1.50） ===
-st.markdown("""
-<style>
-div[data-baseweb="popover"] ul {
-    max-height: 6em !important;  /* 约显示3条 */
-    overflow-y: auto !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
 from services.analytics import (
     forecast_top_consumers,
     sku_consumption_timeseries,
 )
 from services.simulator import simulate_consumption, simulate_consumption_timeseries
+
+
+def persisting_multiselect(label, options, key, default=None):
+    """
+    一个持久化的 multiselect 控件：
+    - 第一次创建时会用 default 初始化；
+    - 后续运行时如果 session_state 中已有值，则不再传 default（防止冲突警告）。
+    """
+    # 如果 Session State 里已经存在值，则直接返回控件，不再传 default，避免警告
+    if key in st.session_state:
+        return st.multiselect(label, options, key=key)
+
+    # 如果还没有初始化，先写入默认值
+    init_value = default or []
+    st.session_state[key] = init_value
+
+    # 第一次创建控件时传入 default
+    return st.multiselect(label, options, default=init_value, key=key)
 
 
 def detect_store_current_qty_col(df_inv: pd.DataFrame) -> Optional[str]:
@@ -46,13 +54,24 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # ---- 💰 Inventory Valuation Analysis ----
     st.subheader("💰 Inventory Valuation Analysis")
 
-    time_range = st.multiselect(
-        "Choose Time Range", ["WTD", "MTD", "YTD"], key="inv_timerange"
-    )
-    all_items = sorted(inv["Item Name"].fillna("Unknown").unique().tolist()) if "Item Name" in inv.columns else []
-    bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
+    # 使用紧凑的三列布局
+    val_col1, val_col2, val_col3 = st.columns([1, 1, 1])
 
-    categories = st.multiselect("Choose Categories / Items", all_items + ["bar", "retail"], key="inv_category")
+    with val_col1:
+        time_range = persisting_multiselect(
+            "Choose Time Range",
+            ["WTD", "MTD", "YTD"],
+            key="inv_timerange"
+        )
+
+    with val_col2:
+        all_items = sorted(inv["Item Name"].fillna("Unknown").unique().tolist()) if "Item Name" in inv.columns else []
+        bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
+        categories = persisting_multiselect(
+            "Choose Categories / Items",
+            all_items + ["bar", "retail"],
+            key="inv_category"
+        )
 
     if time_range and categories:
         df = inv.copy()
@@ -188,8 +207,16 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # Items needing restock
     need_restock = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) < 0].copy()
     if not need_restock.empty:
-        options = sorted(need_restock["option_key"].unique())
-        selected_items = st.multiselect("Search/Filter Items (Restock)", options, key="restock_filter")
+        # 使用紧凑布局
+        restock_col1, restock_col2 = st.columns([1, 2])
+        with restock_col1:
+            options = sorted(need_restock["option_key"].unique())
+            selected_items = persisting_multiselect(
+                "Search/Filter Items (Restock)",
+                options,
+                key="restock_filter"
+            )
+
         df_show = need_restock.copy()
         # ✅ 使用缺货数量的绝对值
         df_show["restock_needed"] = pd.to_numeric(df_show[qty_col], errors="coerce").fillna(0).abs()
@@ -215,8 +242,16 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # ✅ 修复：清仓分析使用实际库存数量（≥0）
     need_clear = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) > clear_threshold].copy()
     if not need_clear.empty:
-        options = sorted(need_clear["option_key"].unique())
-        selected_items = st.multiselect("Search/Filter Items (Clearance)", options, key="clear_filter")
+        # 使用紧凑布局
+        clear_col1, clear_col2 = st.columns([1, 2])
+        with clear_col1:
+            options = sorted(need_clear["option_key"].unique())
+            selected_items = persisting_multiselect(
+                "Search/Filter Items (Clearance)",
+                options,
+                key="clear_filter"
+            )
+
         df_clear = need_clear.copy()
         df_clear["current_qty"] = pd.to_numeric(df_clear[qty_col], errors="coerce").fillna(0)
         if selected_items:
@@ -244,10 +279,14 @@ def show_inventory(tx, inventory: pd.DataFrame):
             threshold_col = c
             break
 
-    default_threshold = st.number_input(
-        "Default Low Stock Threshold (applies when 'Stock Alert Count' is empty)",
-        min_value=1, value=2, step=1
-    )
+    # 使用紧凑布局
+    lowstock_col1, lowstock_col2 = st.columns([1, 2])
+    with lowstock_col1:
+        default_threshold = st.number_input(
+            "Default Low Stock Threshold",
+            min_value=1, value=2, step=1,
+            help="Applies when 'Stock Alert Count' is empty"
+        )
 
     low = inv.copy()
     # ✅ 修复：低库存警报使用实际库存数量
@@ -259,8 +298,16 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
     low = low[low["current_qty"] <= low["alert_threshold"]]
     if not low.empty:
-        options = sorted(low["option_key"].unique())
-        selected_items = st.multiselect("Search/Filter Items (Low Stock)", options, key="lowstock_filter")
+        # 使用紧凑布局
+        filter_col1, filter_col2 = st.columns([1, 2])
+        with filter_col1:
+            options = sorted(low["option_key"].unique())
+            selected_items = persisting_multiselect(
+                "Search/Filter Items (Low Stock)",
+                options,
+                key="lowstock_filter"
+            )
+
         filtered = low.copy()
         if selected_items:
             selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]

@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import math
 
+
 def proper_round(x):
     """标准的四舍五入方法，0.5总是向上舍入"""
     if pd.isna(x):
@@ -12,10 +13,22 @@ def proper_round(x):
     return math.floor(x + 0.5)
 
 
-def persisting_multiselect(label, options, key):
-    if key not in st.session_state:
-        st.session_state[key] = []
-    return st.multiselect(label, options=options, default=st.session_state[key], key=key)
+def persisting_multiselect(label, options, key, default=None):
+    """
+    一个持久化的 multiselect 控件：
+    - 第一次创建时会用 default 初始化；
+    - 后续运行时如果 session_state 中已有值，则不再传 default（防止冲突警告）。
+    """
+    # 如果 Session State 里已经存在值，则直接返回控件，不再传 default，避免警告
+    if key in st.session_state:
+        return st.multiselect(label, options, key=key)
+
+    # 如果还没有初始化，先写入默认值
+    init_value = default or []
+    st.session_state[key] = init_value
+
+    # 第一次创建控件时传入 default
+    return st.multiselect(label, options, default=init_value, key=key)
 
 
 def _safe_sum(df, col):
@@ -34,14 +47,36 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Time Range Filter ----------------
     st.subheader("📅 Time Range")
-    range_opt = st.selectbox("Select range", ["Custom dates", "WTD", "MTD", "YTD"], key="sr_range")
+
+    # 使用紧凑的三列布局
+    range_col1, range_col2, range_col3 = st.columns([1, 1, 1])
+
+    with range_col1:
+        range_opt = st.selectbox("Select range", ["Custom dates", "WTD", "MTD", "YTD"], key="sr_range")
 
     today = pd.Timestamp.today().normalize()
     start_date, end_date = None, today
 
     if range_opt == "Custom dates":
-        t1 = st.date_input("From", today - timedelta(days=7))
-        t2 = st.date_input("To", today)
+        # 自定义日期范围使用紧凑的两列布局
+        st.markdown("**Select Date Range:**")
+        date_col1, date_col2, date_col3 = st.columns([1, 1, 1])
+        with date_col1:
+            st.markdown("**From:**")
+            t1 = st.date_input(
+                "From Date",
+                value=today - timedelta(days=7),
+                key="date_from",
+                label_visibility="collapsed"
+            )
+        with date_col2:
+            st.markdown("**To:**")
+            t2 = st.date_input(
+                "To Date",
+                value=today,
+                key="date_to",
+                label_visibility="collapsed"
+            )
         if t1 and t2:
             start_date, end_date = pd.to_datetime(t1), pd.to_datetime(t2)
     elif range_opt == "WTD":
@@ -55,7 +90,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     df_filtered = tx.copy()
     if start_date is not None and end_date is not None:
         mask = (df_filtered["Datetime"] >= pd.to_datetime(start_date)) & (
-                    df_filtered["Datetime"] <= pd.to_datetime(end_date))
+                df_filtered["Datetime"] <= pd.to_datetime(end_date))
         df_filtered = df_filtered.loc[mask]
 
     # ---------------- 修改计算逻辑：单一类使用 Net Sales + Tax ----------------
@@ -63,7 +98,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # 处理Tax列：移除$符号和逗号，转换为数字
     df["Tax"] = pd.to_numeric(
-        df["Tax"].astype(str).str.replace(r'[^\d.-]', '', regex=True),
+        df["Tax"].ast(str).str.replace(r'[^\d.-]', '', regex=True),
         errors="coerce"
     ).fillna(0)
 
@@ -210,17 +245,17 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Retail table + Multiselect ----------------
     st.subheader("📊 Retail Categories")
-    st.markdown("""
-    <style>
-    /* 控制 multiselect 下拉选项的最大显示高度（新版结构） */
-    div[data-baseweb="popover"] ul {
-        max-height: 6em !important;  /* 大约显示3条 */
-        overflow-y: auto !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
     all_retail_cats = sorted(df[df["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
-    sel_retail_cats = persisting_multiselect("Select Retail Categories", all_retail_cats, key="sr_retail_cats")
+
+    # 使用紧凑的三列布局
+    retail_col1, retail_col2, retail_col3 = st.columns([1, 1, 1])
+    with retail_col1:
+        sel_retail_cats = persisting_multiselect(
+            "Select Retail Categories",
+            all_retail_cats,
+            key="sr_retail_cats",
+            default=[]
+        )
 
     retail_df = time_range_summary(df, retail_cats, range_opt, start_date, end_date)
     if not retail_df.empty:

@@ -1,8 +1,6 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-# === 控制多选框下拉高度（兼容 Streamlit 1.50） ===
-
 import numpy as np
 from datetime import datetime, timedelta
 import re
@@ -18,6 +16,7 @@ from services.analytics import (
     recommend_bundles_for_customer,
     churn_signals_for_member,
 )
+
 
 def format_phone_number(phone):
     """
@@ -47,6 +46,24 @@ def format_phone_number(phone):
     else:
         # 如果没有61，返回原始数字
         return digits_only
+
+
+def persisting_multiselect(label, options, key, default=None):
+    """
+    一个持久化的 multiselect 控件：
+    - 第一次创建时会用 default 初始化；
+    - 后续运行时如果 session_state 中已有值，则不再传 default（防止冲突警告）。
+    """
+    # 如果 Session State 里已经存在值，则直接返回控件，不再传 default，避免警告
+    if key in st.session_state:
+        return st.multiselect(label, options, key=key)
+
+    # 如果还没有初始化，先写入默认值
+    init_value = default or []
+    st.session_state[key] = init_value
+
+    # 第一次创建控件时传入 default
+    return st.multiselect(label, options, default=init_value, key=key)
 
 
 def show_customer_segmentation(tx, members):
@@ -173,20 +190,15 @@ def show_customer_segmentation(tx, members):
         options["Customer ID"] = options["Customer ID"].astype(str)
         options = options.to_dict(orient="records")
 
-    st.markdown("""
-    <style>
-    /* 控制 multiselect 下拉选项的最大显示高度（新版结构） */
-    div[data-baseweb="popover"] ul {
-        max-height: 6em !important;  /* 大约显示3条 */
-        overflow-y: auto !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    sel_ids = st.multiselect(
-        "🔎 Search customers by name (multi-select)",
-        options=[opt["Customer ID"] for opt in options],
-        format_func=lambda x: str(next((opt["Customer Name"] for opt in options if opt["Customer ID"] == x), x))
-    )
+    # 使用紧凑的三列布局，与 high_level.py 保持一致
+    search_col1, search_col2, search_col3 = st.columns([1, 1, 1])
+    with search_col1:
+        sel_ids = persisting_multiselect(
+            "🔎 Search customers by name",
+            options=[opt["Customer ID"] for opt in options],
+            key="customer_search",
+            default=[]
+        )
 
     if sel_ids:
         chosen = tx[tx["Customer ID"].astype(str).isin(sel_ids)]
@@ -205,7 +217,17 @@ def show_customer_segmentation(tx, members):
 
     # [5] Heatmap 可切换
     st.subheader("Heatmap (selectable metric)")
-    metric = st.selectbox("Metric", ["net sales", "number of transactions"], index=0)
+
+    # 使用紧凑的三列布局，与 high_level.py 保持一致
+    heatmap_col1, heatmap_col2, heatmap_col3 = st.columns([1, 1, 1])
+    with heatmap_col1:
+        metric = st.selectbox(
+            "Metric",
+            ["net sales", "number of transactions"],
+            index=0,
+            key="heatmap_metric"
+        )
+
     if time_col:
         t = pd.to_datetime(df[time_col], errors="coerce")
         base = df.assign(_date=t)
