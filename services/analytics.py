@@ -91,23 +91,36 @@ def compute_inventory_profit(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-def load_all(db=None, time_from=None, time_to=None, days=None):
-    conn = db or get_db()
 
-    tx = pd.read_sql("SELECT * FROM transactions", conn)
-    inv = pd.read_sql("SELECT * FROM inventory", conn)
+# services/analytics.py 中的修改
+
+def load_all(db=None, time_from=None, time_to=None, days=None):
+    # 每次都创建新的数据库连接，确保获取最新数据
+    if db is None:
+        conn = get_db()
+    else:
+        conn = db
 
     try:
-        mem = pd.read_sql("SELECT * FROM members", conn)
-    except Exception:
-        mem = pd.DataFrame()
+        # 直接读取所有数据，不使用任何缓存
+        tx = pd.read_sql("SELECT * FROM transactions", conn)
+        inv = pd.read_sql("SELECT * FROM inventory", conn)
 
-    # ✅ 每次都重新计算 inventory_value / profit，保证口径一致
-    if not inv.empty:
-        inv = compute_inventory_profit(inv)
+        try:
+            mem = pd.read_sql("SELECT * FROM members", conn)
+        except Exception:
+            mem = pd.DataFrame()
 
-    return tx, mem, inv
+        # ✅ 每次都重新计算 inventory_value / profit，保证口径一致
+        if not inv.empty:
+            inv = compute_inventory_profit(inv)
 
+        return tx, mem, inv
+
+    finally:
+        # 确保连接被关闭
+        if db is None and hasattr(conn, 'close'):
+            conn.close()
 
 
 # === 日报表 ===
