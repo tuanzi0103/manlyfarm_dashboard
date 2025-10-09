@@ -2,98 +2,93 @@
 import os
 import streamlit as st
 import pandas as pd
+import sqlite3
 from services.analytics import load_all
 from services.db import get_db
 from services.ingestion import ingest_excel, ingest_csv, init_db_from_drive_once
 from charts.high_level import show_high_level
-# 其他模块
 from charts.sales_report import show_sales_report
 from charts.inventory import show_inventory
 from charts.product_mix_only import show_product_mix_only
 from charts.customer_segmentation import show_customer_segmentation
 from init_db import init_db
 
-# 关闭文件监控，避免 Streamlit Cloud 报 inotify 错误
 os.environ["WATCHDOG_DISABLE_FILE_WATCH"] = "true"
 
-# ✅ 确保 SQLite 文件存在
+# 初始化数据库
 init_db()
-# ✅ 如果是空库 → 从 Google Drive 导入（函数实现见 services/ingestion.py）
 init_db_from_drive_once()
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
 st.title("📊 Manly Farm Dashboard")
 
-# ✅ 缓存数据库加载
-@st.cache_data(show_spinner="loading...")
-def load_db_cached(days=365):
-    db = get_db()
-    return load_all(db=db)
+# === 强制刷新机制 ===
+if "force_refresh" not in st.session_state:
+    st.session_state.force_refresh = 0
 
-# === 数据加载 ===
-tx, mem, inv = load_db_cached()
 
-# === Sidebar 功能 ===
+# 直接数据加载函数，不使用缓存
+def load_fresh_data():
+    """直接从数据库加载最新数据"""
+    try:
+        db = get_db()
+        tx, mem, inv = load_all(db=db)
+
+        # 立即关闭数据库连接
+        if hasattr(db, 'close'):
+            db.close()
+
+        return tx, mem, inv
+    except Exception as e:
+        st.error(f"Wrong Data: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+
+# 加载数据
+tx, mem, inv = load_fresh_data()
+
+# === Sidebar ===
 st.sidebar.header("⚙️ Settings")
 
-# 文件上传（CSV / Excel）
+# 文件上传
 uploaded_files = st.sidebar.file_uploader(
     "Upload files",
     type=["csv", "xlsx"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key=f"uploader_{st.session_state.force_refresh}"
 )
 
+# 处理上传文件
 if uploaded_files:
-    db = get_db()
-    for f in uploaded_files:
-        if f.name.lower().endswith(".xlsx"):
-            ingest_excel(f)
-        elif f.name.lower().endswith(".csv"):
-            ingest_csv(f)
-    st.sidebar.success("✅ Files ingested successfully.")
-    load_db_cached.clear()   # 清理缓存，下次刷新自动重算
+    processed_files = []
 
-# === 清空数据库（SQLite 版） ===
-if st.sidebar.button("🗑️ Clear Database"):
-    conn = get_db()
-    cur = conn.cursor()
-    for table in ["transactions", "inventory", "members"]:
+    for file in uploaded_files:
         try:
-            cur.execute(f"DELETE FROM {table}")
-        except Exception:
-            pass
-    conn.commit()
-    st.sidebar.success("✅ Database cleared!")
-    load_db_cached.clear()
+            if file.name.lower().endswith('.xlsx'):
+                result = ingest_excel(file)
+            elif file.name.lower().endswith('.csv'):
+                result = ingest_csv(file)
+            else:
+                st.sidebar.warning(f"skip {file.name}")
+                continue
 
-# === 单位选择（SQLite 版） ===
-st.sidebar.subheader("📏 Units")
+            if result:
+                processed_files.append(file.name)
+                st.sidebar.success(f"✅ {file.name}")
+            else:
+                st.sidebar.error(f"❌ {file.name}")
 
-if inv is not None and not inv.empty and "Unit" in inv.columns:
-    units_available = sorted(inv["Unit"].dropna().unique().tolist())
-else:
-    units_available = ["Gram 1.000", "Kilogram 1.000", "Milligram 1.000"]
+        except Exception as e:
+            st.sidebar.error(f"❌ {file.name}: {str(e)}")
 
-conn = get_db()
-try:
-    rows = conn.execute("SELECT name FROM units").fetchall()
-    db_units = [r[0] for r in rows]
-except Exception:
-    db_units = []
+    if processed_files:
+        st.sidebar.success(f"✅ Processed {len(processed_files)} files")
 
-all_units = sorted(list(set(units_available + db_units)))
-unit = st.sidebar.selectbox("Choose unit", all_units)
+        # 强制刷新数据
+        st.session_state.force_refresh += 1
+        st.rerun()
 
-new_unit = st.sidebar.text_input("Add new unit")
-if st.sidebar.button("➕ Add Unit"):
-    if new_unit and new_unit not in all_units:
-        conn.execute("CREATE TABLE IF NOT EXISTS units (name TEXT UNIQUE)")
-        conn.execute("INSERT OR IGNORE INTO units (name) VALUES (?)", (new_unit,))
-        conn.commit()
-        st.sidebar.success(f"✅ Added new unit: {new_unit}")
-        st.experimental_rerun()
-
-# === Section 选择 ===
+# Section 选择
 section = st.sidebar.radio("📂 Sections", [
     "Section 1: High Level report",
     "Section 2: Sales report by category",
@@ -102,18 +97,18 @@ section = st.sidebar.radio("📂 Sections", [
     "Section 5: Customers insights"
 ])
 
-# === 主体展示 ===
+
+if tx is not None and not tx.empty and 'Datetime' in tx.columns:
+    latest_loaded = tx['Datetime'].max() if pd.notna(tx['Datetime']).any() else 'N/A'
+
+# 主体展示
 if section == "Section 1: High Level report":
     show_high_level(tx, mem, inv)
-
 elif section == "Section 2: Sales report by category":
     show_sales_report(tx, inv)
-
 elif section == "Section 3: Inventory":
     show_inventory(tx, inv)
-
 elif section == "Section 4: product mix":
     show_product_mix_only(tx)
-
 elif section == "Section 5: Customers insights":
     show_customer_segmentation(tx, mem)
