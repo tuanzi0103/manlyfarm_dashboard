@@ -18,6 +18,7 @@ FOLDER_ID = "1lZGE0DkgKyox1HbBzuhZ-oypDF478jBj"
 # ✅ 全局缓存 drive 实例
 _drive_instance = None
 
+
 def get_drive():
     global _drive_instance
     if _drive_instance is not None:
@@ -39,7 +40,7 @@ def get_drive():
 
     if gauth.credentials is None:
         # 第一次认证：加 offline
-        gauth.LocalWebserverAuth()   # 这里会弹浏览器
+        gauth.LocalWebserverAuth()  # 这里会弹浏览器
     elif gauth.access_token_expired:
         gauth.Refresh()
     else:
@@ -48,6 +49,7 @@ def get_drive():
     gauth.SaveCredentialsFile(token_path)
     _drive_instance = GoogleDrive(gauth)
     return _drive_instance
+
 
 def upload_file_to_drive(local_path: str, remote_name: str):
     """把本地文件上传到指定的 Google Drive 文件夹。"""
@@ -60,10 +62,12 @@ def upload_file_to_drive(local_path: str, remote_name: str):
         # 上传失败不影响主流程
         st.sidebar.warning(f"⚠️ Upload to Drive failed: {e}")
 
+
 def download_file_from_drive(file_id, local_path):
     drive = get_drive()
     f = drive.CreateFile({'id': file_id})
     f.GetContentFile(local_path)
+
 
 # --------------- 工具函数 ---------------
 
@@ -74,6 +78,7 @@ def _fix_header(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(index=0).reset_index(drop=True)
     return df
 
+
 def _to_float(series: pd.Series) -> pd.Series:
     return (
         series.astype(str)
@@ -82,12 +87,14 @@ def _to_float(series: pd.Series) -> pd.Series:
         .astype(float)
     )
 
+
 def _extract_date_from_filename(name: str):
     """从文件名中提取 YYYY-MM-DD"""
     m = re.search(r"(\d{4}-\d{2}-\d{2})", name)
     if m:
         return m.group(1)
     return None
+
 
 # --------------- 预处理（不改列名） ---------------
 
@@ -120,7 +127,7 @@ def preprocess_transactions(df: pd.DataFrame) -> pd.DataFrame:
         df["PAN Suffix"] = (
             df["PAN Suffix"]
             .astype(str)
-            .str.replace(r"\.0$", "", regex=True)  # 去掉浮点形式的“.0”
+            .str.replace(r"\.0$", "", regex=True)  # 去掉浮点形式的".0"
             .str.strip()
         )
 
@@ -129,6 +136,13 @@ def preprocess_transactions(df: pd.DataFrame) -> pd.DataFrame:
 
 def preprocess_inventory(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
     df = _fix_header(df)
+
+    # inventory表格从第二行开始是header
+    if len(df) > 0 and all(str(col).startswith("Unnamed") for col in df.columns):
+        df.columns = df.iloc[0]
+        df = df[1:].reset_index(drop=True)
+        df = _fix_header(df)  # 再次处理可能的多行表头
+
     required = [
         "Tax - GST (10%)", "Price", "Current Quantity Vie Market & Bar",
         "Default Unit Cost", "Categories"
@@ -136,12 +150,20 @@ def preprocess_inventory(df: pd.DataFrame, filename: str = None) -> pd.DataFrame
     for col in required:
         if col not in df.columns:
             df[col] = None
+
+    # 过滤掉Current Quantity Vie Market & Bar或者Default Unit Cost为空的行
+    if "Current Quantity Vie Market & Bar" in df.columns and "Default Unit Cost" in df.columns:
+        mask = (~df["Current Quantity Vie Market & Bar"].isna()) & (~df["Default Unit Cost"].isna())
+        df = df[mask].copy()
+
     if filename:
         df["source_date"] = _extract_date_from_filename(filename)
     return df
 
+
 def preprocess_members(df: pd.DataFrame) -> pd.DataFrame:
     return _fix_header(df)
+
 
 # --------------- 表结构对齐 & 去重 & 写入 ---------------
 
@@ -152,12 +174,14 @@ def _table_exists(conn, table: str) -> bool:
     except Exception:
         return False
 
+
 def _existing_columns(conn, table: str) -> list:
     try:
         cur = conn.execute(f"PRAGMA table_info('{table}')")
         return [row[1] for row in cur.fetchall()]
     except Exception:
         return []
+
 
 def _add_missing_columns(conn, table: str, missing_cols: list, prefer_real: set):
     cur = conn.cursor()
@@ -166,8 +190,10 @@ def _add_missing_columns(conn, table: str, missing_cols: list, prefer_real: set)
         cur.execute(f'''ALTER TABLE "{table}" ADD COLUMN "{col}" {coltype}''')
     conn.commit()
 
+
 def _ensure_table_schema(conn, table: str, df: pd.DataFrame, prefer_real: set):
     if not _table_exists(conn, table):
+        # 如果表不存在，创建表
         df.head(0).to_sql(table, conn, if_exists="replace", index=False)
         return
     cols_now = set(_existing_columns(conn, table))
@@ -175,6 +201,7 @@ def _ensure_table_schema(conn, table: str, df: pd.DataFrame, prefer_real: set):
     missing = [c for c in incoming if c not in cols_now]
     if missing:
         _add_missing_columns(conn, table, missing, prefer_real)
+
 
 def _deduplicate(df: pd.DataFrame, key_col: str, conn, table: str) -> pd.DataFrame:
     if key_col not in df.columns:
@@ -186,6 +213,7 @@ def _deduplicate(df: pd.DataFrame, key_col: str, conn, table: str) -> pd.DataFra
         return df[mask]
     except Exception:
         return df
+
 
 def _write_df(conn, df: pd.DataFrame, table: str, key_candidates: list, prefer_real: set):
     _ensure_table_schema(conn, table, df, prefer_real)
@@ -210,6 +238,13 @@ def _write_df(conn, df: pd.DataFrame, table: str, key_candidates: list, prefer_r
 def ensure_indexes():
     conn = get_db()
     cur = conn.cursor()
+
+    # 确保表存在
+    for table in ["transactions", "inventory", "members"]:
+        if not _table_exists(conn, table):
+            # 如果表不存在，创建空表
+            pd.DataFrame().to_sql(table, conn, if_exists="replace", index=False)
+
     cur.execute('CREATE INDEX IF NOT EXISTS idx_txn_datetime ON transactions(Datetime)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_txn_id ON transactions([Transaction ID])')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_member_square ON members([Square Customer ID])')
@@ -217,9 +252,14 @@ def ensure_indexes():
     cur.execute('CREATE INDEX IF NOT EXISTS idx_inv_sku ON inventory(SKU)')
     conn.commit()
 
+
 # --------------- 从 Google Drive 导入 ---------------
 def ingest_from_drive_all():
     conn = get_db()
+
+    # 确保表存在
+    ensure_indexes()
+
     drive = get_drive()
     files = drive.ListFile({'q': f"'{FOLDER_ID}' in parents and trashed=false"}).GetList()
     if not files:
@@ -268,19 +308,42 @@ def ingest_from_drive_all():
 
     ensure_indexes()
 
-@st.cache_data(show_spinner=False)
+
 def init_db_from_drive_once():
     try:
-        ingest_from_drive_all()
+        # 首先确保表存在
+        ensure_indexes()
+
+        # 检查是否有数据，如果没有则从Drive导入
+        conn = get_db()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("SELECT COUNT(*) FROM transactions")
+            tx_count = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM inventory")
+            inv_count = cur.fetchone()[0]
+
+            if tx_count == 0 and inv_count == 0:
+                # 只有两个表都为空时才从Drive导入
+                ingest_from_drive_all()
+        except Exception as e:
+            # 如果查询失败，说明表可能不存在，从Drive导入
+            ingest_from_drive_all()
+
     except Exception as e:
         st.sidebar.warning(f"⚠️ Auto-ingest from Drive failed: {e}")
     return True
 
-# --------------- 手动导入（Sidebar 上传） ---------------
-# 在 services/ingestion.py 中修改以下函数：
 
+# --------------- 手动导入（Sidebar 上传） ---------------
 def ingest_csv(uploaded_file):
     conn = get_db()
+
+    # 确保表存在
+    ensure_indexes()
+
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.csv"
     st.sidebar.info(f"📂 Importing {filename}")
 
@@ -343,6 +406,10 @@ def ingest_csv(uploaded_file):
 
 def ingest_excel(uploaded_file):
     conn = get_db()
+
+    # 确保表存在
+    ensure_indexes()
+
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.xlsx"
     st.sidebar.info(f"📂 Importing {filename}")
 
@@ -398,6 +465,7 @@ def ingest_excel(uploaded_file):
                 os.remove(tmp_path)
         except Exception:
             pass
+
 
 __all__ = [
     "ingest_csv",

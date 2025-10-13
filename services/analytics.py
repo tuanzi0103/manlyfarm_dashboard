@@ -6,6 +6,8 @@ from datetime import timedelta
 from services.db import get_db
 import pandas as pd
 
+
+
 # === 工具函数 ===
 def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -16,6 +18,7 @@ def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(columns=["Unnamed: 0"])
     return df
 
+
 def _to_numeric(series: pd.Series) -> pd.Series:
     return (
         series.astype(str)
@@ -23,6 +26,7 @@ def _to_numeric(series: pd.Series) -> pd.Series:
         .replace("", np.nan)
         .astype(float)
     )
+
 
 # === 数据加载 ===
 def load_transactions(db, days=365, time_from=None, time_to=None):
@@ -47,22 +51,23 @@ def load_transactions(db, days=365, time_from=None, time_to=None):
         df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
     return df
 
+
 def load_inventory(db) -> pd.DataFrame:
     df = pd.read_sql("SELECT * FROM inventory", db)
     return _clean_df(df)
+
 
 def load_members(db) -> pd.DataFrame:
     df = pd.read_sql("SELECT * FROM members", db)
     return _clean_df(df)
 
+
 def compute_inventory_profit(df: pd.DataFrame) -> pd.DataFrame:
     """
-    正确计算公式：
-    - retail_total:
-        BM = N → Price × Qty
-        BM = Y → (Price / 11 * 10) × Qty
-    - inventory_value = Default Unit Cost × Qty
-    - profit = retail_total - inventory_value
+    修改后的inventory value计算公式：
+    - Tax - GST (10%)列如果是N: inventory value = Current Quantity Vie Market & Bar * Default Unit Cost
+    - Tax - GST (10%)列如果是Y: inventory value = Current Quantity Vie Market & Bar * (Default Unit Cost/11*10)
+    - 过滤掉Current Quantity Vie Market & Bar或者Default Unit Cost为空的行
     """
     if df is None or df.empty:
         return df
@@ -73,16 +78,28 @@ def compute_inventory_profit(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = np.nan
 
+    # 过滤掉空值行
+    mask = (~df["Current Quantity Vie Market & Bar"].isna()) & (~df["Default Unit Cost"].isna())
+    df = df[mask].copy()
+
+    if df.empty:
+        return df
+
     price = _to_numeric(df["Price"])
     qty = _to_numeric(df["Current Quantity Vie Market & Bar"])
     unit_cost = _to_numeric(df["Default Unit Cost"])
     tax_flag = df["Tax - GST (10%)"].astype(str)
 
+    # 计算 retail_total
     retail_total = pd.Series(0.0, index=df.index)
     retail_total.loc[tax_flag.eq("N")] = (price * qty).loc[tax_flag.eq("N")]
     retail_total.loc[tax_flag.eq("Y")] = ((price / 11.0 * 10.0) * qty).loc[tax_flag.eq("Y")]
 
-    inventory_value = unit_cost * qty
+    # 修改：计算 inventory_value
+    inventory_value = pd.Series(0.0, index=df.index)
+    inventory_value.loc[tax_flag.eq("N")] = (unit_cost * qty).loc[tax_flag.eq("N")]
+    inventory_value.loc[tax_flag.eq("Y")] = ((unit_cost / 11.0 * 10.0) * qty).loc[tax_flag.eq("Y")]
+
     profit = retail_total - inventory_value
 
     df["retail_total"] = retail_total
@@ -92,35 +109,22 @@ def compute_inventory_profit(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# services/analytics.py 中的修改
-
 def load_all(db=None, time_from=None, time_to=None, days=None):
-    # 每次都创建新的数据库连接，确保获取最新数据
-    if db is None:
-        conn = get_db()
-    else:
-        conn = db
+    conn = db or get_db()
+
+    tx = pd.read_sql("SELECT * FROM transactions", conn)
+    inv = pd.read_sql("SELECT * FROM inventory", conn)
 
     try:
-        # 直接读取所有数据，不使用任何缓存
-        tx = pd.read_sql("SELECT * FROM transactions", conn)
-        inv = pd.read_sql("SELECT * FROM inventory", conn)
+        mem = pd.read_sql("SELECT * FROM members", conn)
+    except Exception:
+        mem = pd.DataFrame()
 
-        try:
-            mem = pd.read_sql("SELECT * FROM members", conn)
-        except Exception:
-            mem = pd.DataFrame()
+    # ✅ 每次都重新计算 inventory_value / profit，保证口径一致
+    if not inv.empty:
+        inv = compute_inventory_profit(inv)
 
-        # ✅ 每次都重新计算 inventory_value / profit，保证口径一致
-        if not inv.empty:
-            inv = compute_inventory_profit(inv)
-
-        return tx, mem, inv
-
-    finally:
-        # 确保连接被关闭
-        if db is None and hasattr(conn, 'close'):
-            conn.close()
+    return tx, mem, inv
 
 
 # === 日报表 ===
@@ -154,6 +158,7 @@ def daily_summary(transactions: pd.DataFrame) -> pd.DataFrame:
     summary["profit"] = summary["gross"] - summary["net_sales"]
     return summary
 
+
 # === 销售预测 ===
 def forecast_sales(transactions: pd.DataFrame, periods: int = 30) -> pd.DataFrame:
     if transactions.empty:
@@ -170,6 +175,7 @@ def forecast_sales(transactions: pd.DataFrame, periods: int = 30) -> pd.DataFram
         "forecast": forecast.values
     })
 
+
 # === 高消费客户 ===
 def forecast_top_consumers(transactions: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     if transactions.empty or "Customer ID" not in transactions.columns:
@@ -182,6 +188,7 @@ def forecast_top_consumers(transactions: pd.DataFrame, top_n: int = 10) -> pd.Da
         .head(top_n)
     )
 
+
 # === SKU 消耗时序 ===
 def sku_consumption_timeseries(transactions: pd.DataFrame, sku: str) -> pd.DataFrame:
     if transactions.empty or "Item" not in transactions.columns:
@@ -192,6 +199,7 @@ def sku_consumption_timeseries(transactions: pd.DataFrame, sku: str) -> pd.DataF
     df["date"] = pd.to_datetime(df["Datetime"]).dt.date
     return df.groupby("date")["Qty"].sum().reset_index()
 
+
 # === 会员相关分析 ===
 def member_flagged_transactions(transactions: pd.DataFrame, members: pd.DataFrame) -> pd.DataFrame:
     if transactions.empty or members.empty:
@@ -200,6 +208,7 @@ def member_flagged_transactions(transactions: pd.DataFrame, members: pd.DataFram
     transactions = transactions.copy()
     transactions["is_member"] = transactions["Customer ID"].apply(lambda x: x in member_ids)
     return transactions
+
 
 def member_frequency_stats(transactions: pd.DataFrame, members: pd.DataFrame) -> pd.DataFrame:
     if transactions.empty or members.empty:
@@ -226,11 +235,14 @@ def non_member_overview(transactions: pd.DataFrame, members: pd.DataFrame) -> pd
     df = transactions[~transactions["Customer ID"].isin(member_ids)].copy()
     return df.groupby("Customer ID")["Net Sales"].sum().reset_index()
 
+
 # === 分类与推荐分析 ===
 def category_counts(transactions: pd.DataFrame) -> pd.DataFrame:
     if transactions.empty or "Category" not in transactions.columns:
         return pd.DataFrame()
-    return transactions["Category"].value_counts().reset_index().rename(columns={"index": "Category", "Category": "count"})
+    return transactions["Category"].value_counts().reset_index().rename(
+        columns={"index": "Category", "Category": "count"})
+
 
 def heatmap_pivot(transactions: pd.DataFrame) -> pd.DataFrame:
     if transactions.empty or "Category" not in transactions.columns:
@@ -238,6 +250,7 @@ def heatmap_pivot(transactions: pd.DataFrame) -> pd.DataFrame:
     return pd.pivot_table(
         transactions, values="Net Sales", index="Customer ID", columns="Category", aggfunc="sum", fill_value=0
     )
+
 
 def top_categories_for_customer(transactions: pd.DataFrame, customer_id: str, top_n: int = 3) -> pd.DataFrame:
     df = transactions[transactions["Customer ID"] == customer_id]
@@ -251,12 +264,14 @@ def top_categories_for_customer(transactions: pd.DataFrame, customer_id: str, to
         .head(top_n)
     )
 
+
 def recommend_similar_categories(transactions: pd.DataFrame, category: str, top_n: int = 3) -> pd.DataFrame:
     if transactions.empty or "Category" not in transactions.columns:
         return pd.DataFrame()
     other_cats = transactions["Category"].value_counts().reset_index()
     other_cats = other_cats[other_cats["index"] != category]
     return other_cats.head(top_n)
+
 
 def ltv_timeseries_for_customer(transactions: pd.DataFrame, customer_id: str) -> pd.DataFrame:
     df = transactions[transactions["Customer ID"] == customer_id]
@@ -265,13 +280,16 @@ def ltv_timeseries_for_customer(transactions: pd.DataFrame, customer_id: str) ->
     df["date"] = pd.to_datetime(df["Datetime"]).dt.date
     return df.groupby("date")["Net Sales"].sum().cumsum().reset_index()
 
+
 def recommend_bundles_for_customer(transactions: pd.DataFrame, customer_id: str, top_n: int = 3) -> pd.DataFrame:
     df = transactions[transactions["Customer ID"] == customer_id]
     if df.empty or "Item" not in df.columns:
         return pd.DataFrame()
     return df["Item"].value_counts().reset_index().head(top_n)
 
-def churn_signals_for_member(transactions: pd.DataFrame, members: pd.DataFrame, days_threshold: int = 30) -> pd.DataFrame:
+
+def churn_signals_for_member(transactions: pd.DataFrame, members: pd.DataFrame,
+                             days_threshold: int = 30) -> pd.DataFrame:
     if transactions.empty or members.empty:
         return pd.DataFrame()
     df = transactions[transactions["Customer ID"].isin(members["Square Customer ID"].unique())]
