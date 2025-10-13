@@ -33,12 +33,13 @@ def persisting_multiselect(label, options, key, default=None):
     return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 
-# === 修正的聚合逻辑 - 确保bar计算正确 ===
-@st.cache_data
-def get_high_level_data():
+# === 预加载所有数据 ===
+@st.cache_data(ttl=300)  # 5分钟缓存
+def preload_all_data():
+    """预加载所有需要的数据"""
     db = get_db()
 
-    # === total（日级）：SUM(ROUND(Gross - Tax, 2))，再汇总 ===
+    # 加载交易数据
     daily_sql = """
     WITH transaction_totals AS (
         SELECT 
@@ -52,7 +53,6 @@ def get_high_level_data():
     )
     SELECT
         date,
-        -- ✅ 修正 total 逻辑：逐行 (Gross - Tax) 保留两位小数后求和
         SUM(ROUND(total_gross_sales - total_tax, 2)) AS net_sales_with_tax,
         SUM(total_gross_sales) AS gross_sales,
         SUM(total_tax) AS total_tax,
@@ -68,7 +68,6 @@ def get_high_level_data():
     ORDER BY date;
     """
 
-    # === category（日级）：SUM(ROUND(Net + Tax, 2)) ===
     category_sql = """
     WITH category_transactions AS (
         SELECT 
@@ -98,7 +97,6 @@ def get_high_level_data():
     SELECT
         date,
         Category,
-        -- ✅ 逐行保留两位小数后再汇总
         SUM(cat_total_with_tax) AS net_sales_with_tax,
         SUM(cat_net_sales) AS net_sales,
         SUM(cat_tax) AS total_tax,
@@ -123,10 +121,26 @@ def get_high_level_data():
     if not category.empty:
         category["date"] = pd.to_datetime(category["date"])
 
+    # 计算滚动平均值
+    if not daily.empty:
+        daily = daily.sort_values("date")
+        daily["3M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=90, min_periods=1).mean()
+        daily["6M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=180, min_periods=1).mean()
+
+    # 为分类数据也计算滚动平均
+    if not category.empty:
+        category = category.sort_values(["Category", "date"])
+        category["3M_Avg_Rolling"] = category.groupby("Category")["net_sales_with_tax"].transform(
+            lambda x: x.rolling(window=90, min_periods=1).mean()
+        )
+        category["6M_Avg_Rolling"] = category.groupby("Category")["net_sales_with_tax"].transform(
+            lambda x: x.rolling(window=180, min_periods=1).mean()
+        )
+
     return daily, category
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def _prepare_inventory_grouped(inv: pd.DataFrame):
     if inv is None or inv.empty:
         return pd.DataFrame(), None
@@ -192,15 +206,11 @@ def _prepare_inventory_grouped(inv: pd.DataFrame):
     return g, latest_date
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel, custom_dates_selected, t1, t2):
     """准备图表数据的缓存函数，不包含小部件"""
     if not time_range or not data_sel or not cats_sel:
         return None
-
-    # 首先获取完整的数据用于计算滚动平均
-    daily_full = daily.copy()
-    grouped_tx_full = category_tx.copy()
 
     # 获取当前日期
     today = pd.Timestamp.today().normalize()
@@ -263,7 +273,9 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
                 "transactions": "sum",
                 "avg_txn": "mean",
                 "gross": "sum",
-                "qty": "sum"
+                "qty": "sum",
+                "3M_Avg_Rolling": "mean",  # 添加滚动平均列
+                "6M_Avg_Rolling": "mean"  # 添加滚动平均列
             }).reset_index()
             bar_tx_aggregated["Category"] = "bar"
             parts_tx.append(bar_tx_aggregated)
@@ -285,72 +297,15 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
 
     df_plot = pd.concat(parts_tx, ignore_index=True)
 
-    # === 数据映射 ===
+    # === 修正的数据映射 - 使用预计算的滚动平均值 ===
     data_map = {
         "Daily Net Sales": "net_sales_with_tax",
         "Daily Transactions": "transactions",
         "Avg Transaction": "avg_txn",
-        "3M Avg": "net_sales_with_tax",
-        "6M Avg": "net_sales_with_tax",
+        "3M Avg": "3M_Avg_Rolling",  # 使用预计算的滚动平均值
+        "6M Avg": "6M_Avg_Rolling",  # 使用预计算的滚动平均值
         "Items Sold": "qty",
     }
-
-    # 处理滚动平均
-    if "3M Avg" in data_sel or "6M Avg" in data_sel:
-        # 为每个类别计算滚动平均
-        df_plot_rolling = df_plot.copy()
-        df_plot_rolling = df_plot_rolling.sort_values(["Category", "date"])
-
-        # 使用完整数据计算滚动平均
-        df_full_rolling = pd.concat([
-            # 修改：bar类别需要先聚合五类数据
-            grouped_tx_full[grouped_tx_full["Category"].isin(bar_cats)].groupby("date").agg({
-                "net_sales_with_tax": "sum",
-                "net_sales": "sum",
-                "total_tax": "sum",
-                "transactions": "sum",
-                "avg_txn": "mean",
-                "gross": "sum",
-                "qty": "sum"
-            }).reset_index().assign(Category="bar") if cat == "bar" else
-            grouped_tx_full.assign(Category="retail") if cat == "retail" else
-            daily_full.assign(Category="total") if cat == "total" else
-            grouped_tx_full[grouped_tx_full["Category"] == cat].copy()
-            for cat in cats_sel
-        ], ignore_index=True)
-
-        df_full_rolling = df_full_rolling.sort_values(["Category", "date"])
-
-        # 计算滚动平均
-        window_3m = 90
-        window_6m = 180
-
-        df_full_rolling["3M Avg"] = df_full_rolling.groupby("Category")["net_sales_with_tax"].transform(
-            lambda x: x.rolling(window_3m, min_periods=1).mean()
-        )
-        df_full_rolling["6M Avg"] = df_full_rolling.groupby("Category")["net_sales_with_tax"].transform(
-            lambda x: x.rolling(window_6m, min_periods=1).mean()
-        )
-
-        # 应用时间范围筛选到滚动平均数据
-        df_full_rolling_filtered = df_full_rolling.copy()
-        if "WTD" in time_range:
-            df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_week]
-        if "MTD" in time_range:
-            df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_month]
-        if "YTD" in time_range:
-            df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_year]
-        if custom_dates_selected and t1 and t2:
-            df_full_rolling_filtered = df_full_rolling_filtered[
-                (df_full_rolling_filtered["date"] >= pd.to_datetime(t1)) &
-                (df_full_rolling_filtered["date"] <= pd.to_datetime(t2))
-                ]
-
-        # 合并滚动平均数据到主数据框
-        df_plot = df_plot.merge(
-            df_full_rolling_filtered[["date", "Category", "3M Avg", "6M Avg"]],
-            on=["date", "Category"], how="left"
-        )
 
     # 处理库存数据
     if "Inventory Value" in data_sel or "Profit (Amount)" in data_sel:
@@ -363,7 +318,7 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
                 "Profit": "profit_amount"
             })
             # 添加缺失的列
-            for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty"]:
+            for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty", "3M_Avg_Rolling", "6M_Avg_Rolling"]:
                 grouped_inv_plot[col] = 0
 
             # 如果选择了库存相关的数据，将库存数据合并到主数据框
@@ -391,7 +346,7 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
                 }).reset_index()
                 total_inv_sum["Category"] = "total"
                 # 添加缺失的列
-                for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty"]:
+                for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty", "3M_Avg_Rolling", "6M_Avg_Rolling"]:
                     total_inv_sum[col] = 0
                 df_plot = pd.concat([df_plot, total_inv_sum], ignore_index=True)
 
@@ -419,8 +374,10 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     st.header("📊 High Level Report")
 
-    daily, category_tx = get_high_level_data()
-    inv_grouped, inv_latest_date = _prepare_inventory_grouped(inv)
+    # 使用预加载的数据
+    with st.spinner("Loading data..."):
+        daily, category_tx = preload_all_data()
+        inv_grouped, inv_latest_date = _prepare_inventory_grouped(inv)
 
     if daily.empty:
         st.warning("No transaction data available. Please upload data first.")
@@ -428,7 +385,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # === 特定日期选择 ===
     st.subheader("📅 Select Specific Date")
-    col_date, _ = st.columns([1, 2])  # 第一个列放选择框，第二个留空拉窄宽度
+    col_date, _ = st.columns([1, 2])
     with col_date:
         available_dates = sorted(daily["date"].dt.date.unique(), reverse=True)
         selected_date = st.selectbox("Choose a specific date to view data", available_dates)
@@ -481,8 +438,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         "Daily Transactions": df_selected_date["transactions"].sum(),
         "Number of Customers": calculate_customer_count(tx, selected_date),
         "Avg Transaction": df_selected_date["avg_txn"].mean(),
-        "3M Avg": proper_round(daily["net_sales_with_tax"].rolling(90, min_periods=1).mean().iloc[-1]),
-        "6M Avg": proper_round(daily["net_sales_with_tax"].rolling(180, min_periods=1).mean().iloc[-1]),
+        "3M Avg": proper_round(daily["3M_Avg_Rolling"].iloc[-1]),  # 使用预计算的滚动平均值
+        "6M Avg": proper_round(daily["6M_Avg_Rolling"].iloc[-1]),  # 使用预计算的滚动平均值
         "Items Sold": df_selected_date["qty"].sum(),
     }
 
@@ -571,9 +528,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     if "Custom dates" in time_range:
         custom_dates_selected = True
-        # 🔹 修复1：使用与上面三列布局相同长度的列布局，与 sales_report.py 保持一致
         st.markdown("#### 📅 Custom Date Range")
-        col_from, col_to, _ = st.columns([1, 1, 1])  # 改为三列布局
+        col_from, col_to, _ = st.columns([1, 1, 1])
         with col_from:
             t1 = st.date_input(
                 "From",
@@ -600,8 +556,9 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # 使用缓存的函数准备图表数据
     if has_time_range and has_data_sel and has_cats_sel and has_valid_custom_dates:
-        result = prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
-                                    custom_dates_selected, t1, t2)
+        with st.spinner("Generating charts..."):
+            result = prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
+                                        custom_dates_selected, t1, t2)
 
         if result is None:
             st.warning("No data for selected categories.")
