@@ -10,24 +10,6 @@ from services.analytics import (
 from services.simulator import simulate_consumption, simulate_consumption_timeseries
 
 
-def persisting_multiselect(label, options, key, default=None):
-    """
-    一个持久化的 multiselect 控件：
-    - 第一次创建时会用 default 初始化；
-    - 后续运行时如果 session_state 中已有值，则不再传 default（防止冲突警告）。
-    """
-    # 如果 Session State 里已经存在值，则直接返回控件，不再传 default，避免警告
-    if key in st.session_state:
-        return st.multiselect(label, options, key=key)
-
-    # 如果还没有初始化，先写入默认值
-    init_value = default or []
-    st.session_state[key] = init_value
-
-    # 第一次创建控件时传入 default
-    return st.multiselect(label, options, default=init_value, key=key)
-
-
 def detect_store_current_qty_col(df_inv: pd.DataFrame) -> Optional[str]:
     if df_inv is None or df_inv.empty:
         return None
@@ -36,6 +18,15 @@ def detect_store_current_qty_col(df_inv: pd.DataFrame) -> Optional[str]:
         if n.startswith("current quantity"):
             return c
     return None
+
+
+def persisting_multiselect(label, options, key, default=None):
+    """
+    保持选择状态的多选框函数
+    """
+    if key not in st.session_state:
+        st.session_state[key] = default or []
+    return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 
 def show_inventory(tx, inventory: pd.DataFrame):
@@ -54,24 +45,33 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # ---- 💰 Inventory Valuation Analysis ----
     st.subheader("💰 Inventory Valuation Analysis")
 
-    # 使用紧凑的三列布局
-    val_col1, val_col2, val_col3 = st.columns([1, 1, 1])
+    # 🔹 用三列布局缩短下拉框宽度
+    col1, col2, col3 = st.columns([1, 1, 1])
 
-    with val_col1:
+    # === 第一列：时间范围 ===
+    with col1:
         time_range = persisting_multiselect(
             "Choose Time Range",
             ["WTD", "MTD", "YTD"],
-            key="inv_timerange"
+            key="inv_timerange",
+            default=[]
         )
 
-    with val_col2:
-        all_items = sorted(inv["Item Name"].fillna("Unknown").unique().tolist()) if "Item Name" in inv.columns else []
-        bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
+    all_items = sorted(inv["Item Name"].fillna("Unknown").unique().tolist()) if "Item Name" in inv.columns else []
+    bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
+
+    # === 第二列：分类/项目 ===
+    with col2:
         categories = persisting_multiselect(
             "Choose Categories / Items",
             all_items + ["bar", "retail"],
-            key="inv_category"
+            key="inv_category",
+            default=[]
         )
+
+    # === 第三列：占位符，保持布局一致 ===
+    with col3:
+        st.write("")  # 空列保持布局平衡
 
     if time_range and categories:
         df = inv.copy()
@@ -207,14 +207,17 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # Items needing restock
     need_restock = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) < 0].copy()
     if not need_restock.empty:
-        # 使用紧凑布局
-        restock_col1, restock_col2 = st.columns([1, 2])
-        with restock_col1:
-            options = sorted(need_restock["option_key"].unique())
+        options = sorted(need_restock["option_key"].unique())
+
+        # 🔹 用三列布局缩短下拉框宽度
+        col1_restock, col2_restock, col3_restock = st.columns([1, 1, 1])
+
+        with col1_restock:
             selected_items = persisting_multiselect(
                 "Search/Filter Items (Restock)",
                 options,
-                key="restock_filter"
+                key="restock_filter",
+                default=[]
             )
 
         df_show = need_restock.copy()
@@ -242,14 +245,17 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # ✅ 修复：清仓分析使用实际库存数量（≥0）
     need_clear = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) > clear_threshold].copy()
     if not need_clear.empty:
-        # 使用紧凑布局
-        clear_col1, clear_col2 = st.columns([1, 2])
-        with clear_col1:
-            options = sorted(need_clear["option_key"].unique())
+        options = sorted(need_clear["option_key"].unique())
+
+        # 🔹 用三列布局缩短下拉框宽度
+        col1_clear, col2_clear, col3_clear = st.columns([1, 1, 1])
+
+        with col1_clear:
             selected_items = persisting_multiselect(
                 "Search/Filter Items (Clearance)",
                 options,
-                key="clear_filter"
+                key="clear_filter",
+                default=[]
             )
 
         df_clear = need_clear.copy()
@@ -279,13 +285,13 @@ def show_inventory(tx, inventory: pd.DataFrame):
             threshold_col = c
             break
 
-    # 使用紧凑布局
-    lowstock_col1, lowstock_col2 = st.columns([1, 2])
-    with lowstock_col1:
+    # 🔹 用三列布局缩短输入框宽度
+    col1_threshold, col2_threshold, col3_threshold = st.columns([1, 1, 1])
+
+    with col1_threshold:
         default_threshold = st.number_input(
-            "Default Low Stock Threshold",
-            min_value=1, value=2, step=1,
-            help="Applies when 'Stock Alert Count' is empty"
+            "Default Low Stock Threshold (applies when 'Stock Alert Count' is empty)",
+            min_value=1, value=2, step=1
         )
 
     low = inv.copy()
@@ -298,14 +304,17 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
     low = low[low["current_qty"] <= low["alert_threshold"]]
     if not low.empty:
-        # 使用紧凑布局
-        filter_col1, filter_col2 = st.columns([1, 2])
-        with filter_col1:
-            options = sorted(low["option_key"].unique())
+        options = sorted(low["option_key"].unique())
+
+        # 🔹 用三列布局缩短下拉框宽度
+        col1_low, col2_low, col3_low = st.columns([1, 1, 1])
+
+        with col1_low:
             selected_items = persisting_multiselect(
                 "Search/Filter Items (Low Stock)",
                 options,
-                key="lowstock_filter"
+                key="lowstock_filter",
+                default=[]
             )
 
         filtered = low.copy()

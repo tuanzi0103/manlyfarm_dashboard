@@ -1,4 +1,5 @@
 import streamlit as st
+
 import plotly.express as px
 import pandas as pd
 import numpy as np
@@ -48,24 +49,6 @@ def format_phone_number(phone):
         return digits_only
 
 
-def persisting_multiselect(label, options, key, default=None):
-    """
-    一个持久化的 multiselect 控件：
-    - 第一次创建时会用 default 初始化；
-    - 后续运行时如果 session_state 中已有值，则不再传 default（防止冲突警告）。
-    """
-    # 如果 Session State 里已经存在值，则直接返回控件，不再传 default，避免警告
-    if key in st.session_state:
-        return st.multiselect(label, options, key=key)
-
-    # 如果还没有初始化，先写入默认值
-    init_value = default or []
-    st.session_state[key] = init_value
-
-    # 第一次创建控件时传入 default
-    return st.multiselect(label, options, default=init_value, key=key)
-
-
 def show_customer_segmentation(tx, members):
     st.header("👥 Customer Segmentation & Personalization")
 
@@ -92,7 +75,8 @@ def show_customer_segmentation(tx, members):
         avg_spend_member = df_kpi[df_kpi["is_member"]]["_net"].mean()
         avg_spend_non_member = df_kpi[~df_kpi["is_member"]]["_net"].mean()
 
-    c1, c2 = st.columns(2)
+    # 🔹 使用三列布局缩短下拉框宽度，与 high_level.py 保持一致
+    c1, c2, _ = st.columns([1, 1, 1])
     with c1:
         st.metric("Average spend per customers **enrolled**",
                   "-" if pd.isna(avg_spend_member) else f"{avg_spend_member:,.2f}")
@@ -190,14 +174,13 @@ def show_customer_segmentation(tx, members):
         options["Customer ID"] = options["Customer ID"].astype(str)
         options = options.to_dict(orient="records")
 
-    # 使用紧凑的三列布局，与 high_level.py 保持一致
-    search_col1, search_col2, search_col3 = st.columns([1, 1, 1])
-    with search_col1:
-        sel_ids = persisting_multiselect(
-            "🔎 Search customers by name",
+    # 🔹 使用三列布局缩短下拉框宽度，与 high_level.py 保持一致
+    col_search, _, _ = st.columns([1, 1, 1])
+    with col_search:
+        sel_ids = st.multiselect(
+            "🔎 Search customers by name (multi-select)",
             options=[opt["Customer ID"] for opt in options],
-            key="customer_search",
-            default=[]
+            format_func=lambda x: str(next((opt["Customer Name"] for opt in options if opt["Customer ID"] == x), x))
         )
 
     if sel_ids:
@@ -217,16 +200,10 @@ def show_customer_segmentation(tx, members):
 
     # [5] Heatmap 可切换
     st.subheader("Heatmap (selectable metric)")
-
-    # 使用紧凑的三列布局，与 high_level.py 保持一致
-    heatmap_col1, heatmap_col2, heatmap_col3 = st.columns([1, 1, 1])
-    with heatmap_col1:
-        metric = st.selectbox(
-            "Metric",
-            ["net sales", "number of transactions"],
-            index=0,
-            key="heatmap_metric"
-        )
+    # 🔹 使用三列布局缩短下拉框宽度，与 high_level.py 保持一致
+    col_metric, _, _ = st.columns([1, 1, 1])
+    with col_metric:
+        metric = st.selectbox("Metric", ["net sales", "number of transactions"], index=0)
 
     if time_col:
         t = pd.to_datetime(df[time_col], errors="coerce")

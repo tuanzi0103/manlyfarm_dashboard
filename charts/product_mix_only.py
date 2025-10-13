@@ -3,11 +3,12 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 import re
+from typing import Union
 from itertools import combinations
-from typing import Optional
 
 from services.db import get_db
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
 
 # ==================== 可调参数 ====================
 FORECAST_WEEKS = 3  # 预测3周
@@ -29,7 +30,7 @@ def _item_col(df: pd.DataFrame) -> str:
     return df.columns[0]
 
 
-def _category_col(df: pd.DataFrame) -> Optional[str]:
+def _category_col(df: pd.DataFrame) -> Union[str, None]:
     for c in ["Category", "Categories", "Category Name", "Category (Top Level)",
               "Reporting Category", "Department"]:
         if c in df.columns:

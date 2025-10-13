@@ -14,25 +14,23 @@ def proper_round(x):
 
 
 def persisting_multiselect(label, options, key, default=None):
-    """
-    一个持久化的 multiselect 控件：
-    - 第一次创建时会用 default 初始化；
-    - 后续运行时如果 session_state 中已有值，则不再传 default（防止冲突警告）。
-    """
-    # 如果 Session State 里已经存在值，则直接返回控件，不再传 default，避免警告
-    if key in st.session_state:
-        return st.multiselect(label, options, key=key)
-
-    # 如果还没有初始化，先写入默认值
-    init_value = default or []
-    st.session_state[key] = init_value
-
-    # 第一次创建控件时传入 default
-    return st.multiselect(label, options, default=init_value, key=key)
+    if key not in st.session_state:
+        st.session_state[key] = default or []
+    return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 
 def _safe_sum(df, col):
-    return float(pd.to_numeric(df.get(col), errors="coerce").fillna(0).sum())
+    if df is None or df.empty or col not in df.columns:
+        return 0.0
+    s = df[col]
+    if pd.api.types.is_numeric_dtype(s):
+        return float(pd.to_numeric(s, errors="coerce").sum(skipna=True))
+    s = (
+        s.astype(str)
+        .str.replace(r"[^0-9\.\-]", "", regex=True)
+        .replace("", pd.NA)
+    )
+    return float(pd.to_numeric(s, errors="coerce").sum(skipna=True) or 0.0)
 
 
 def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
@@ -48,66 +46,63 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     # ---------------- Time Range Filter ----------------
     st.subheader("📅 Time Range")
 
-    # 使用紧凑的三列布局
-    range_col1, range_col2, range_col3 = st.columns([1, 1, 1])
+    # 🔹 使用三列布局缩短下拉框宽度，与 high_level.py 保持一致
+    col1, col2, col3 = st.columns([1, 1, 1])
 
-    with range_col1:
+    with col1:
         range_opt = st.selectbox("Select range", ["Custom dates", "WTD", "MTD", "YTD"], key="sr_range")
 
     today = pd.Timestamp.today().normalize()
     start_date, end_date = None, today
 
     if range_opt == "Custom dates":
-        # 自定义日期范围使用紧凑的两列布局
-        st.markdown("**Select Date Range:**")
-        date_col1, date_col2, date_col3 = st.columns([1, 1, 1])
-        with date_col1:
-            st.markdown("**From:**")
+        # 使用三列布局，与 "Select range" 一致
+        col_from, col_to, _ = st.columns([1, 1, 1])
+        with col_from:
             t1 = st.date_input(
-                "From Date",
-                value=today - timedelta(days=7),
-                key="date_from",
-                label_visibility="collapsed"
+                "From",
+                value=pd.Timestamp.today().normalize() - pd.Timedelta(days=7),
+                key="sr_date_from"
             )
-        with date_col2:
-            st.markdown("**To:**")
+        with col_to:
             t2 = st.date_input(
-                "To Date",
-                value=today,
-                key="date_to",
-                label_visibility="collapsed"
+                "To",
+                value=pd.Timestamp.today().normalize(),
+                key="sr_date_to"
             )
         if t1 and t2:
             start_date, end_date = pd.to_datetime(t1), pd.to_datetime(t2)
     elif range_opt == "WTD":
-        start_date = today - timedelta(days=7)
+        start_date = today - pd.Timedelta(days=today.weekday())
     elif range_opt == "MTD":
-        start_date = today - timedelta(days=30)
+        start_date = today.replace(day=1)
     elif range_opt == "YTD":
-        start_date = today - timedelta(days=365)
+        start_date = today.replace(month=1, day=1)
 
     # 应用时间范围筛选
     df_filtered = tx.copy()
     if start_date is not None and end_date is not None:
         mask = (df_filtered["Datetime"] >= pd.to_datetime(start_date)) & (
-                df_filtered["Datetime"] <= pd.to_datetime(end_date))
+                df_filtered["Datetime"] <= pd.Timestamp(end_date))
         df_filtered = df_filtered.loc[mask]
 
-    # ---------------- 修改计算逻辑：单一类使用 Net Sales + Tax ----------------
+    # ---------------- 使用与 high_level.py 一致的计算逻辑 ----------------
     df = df_filtered.copy()
 
     # 处理Tax列：移除$符号和逗号，转换为数字
     df["Tax"] = pd.to_numeric(
-        df["Tax"].ast(str).str.replace(r'[^\d.-]', '', regex=True),
+        df["Tax"].astype(str).str.replace(r'[^\d.-]', '', regex=True),
         errors="coerce"
     ).fillna(0)
 
-    # 处理Net Sales列
-    df["Net Sales"] = pd.to_numeric(df.get("Net Sales"), errors="coerce").fillna(0.0)
+    # 处理Gross Sales列
+    df["Gross Sales"] = pd.to_numeric(df.get("Gross Sales"), errors="coerce").fillna(0.0)
     df["Qty"] = pd.to_numeric(df.get("Qty"), errors="coerce").fillna(0).abs()
 
-    # 单一类的计算逻辑：Daily Sales = Net Sales + Tax
-    df["Daily Sales"] = df["Net Sales"] + df["Tax"]
+    # 使用与 high_level.py 一致的计算逻辑：Daily Sales = Gross Sales - Tax
+    df["Daily Sales"] = df["Gross Sales"] - df["Tax"]
+    # 应用四舍五入到每行数据
+    df["Daily Sales"] = df["Daily Sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
 
     # ---------------- Bar Charts ----------------
     # 使用新的Daily Sales进行计算
@@ -125,8 +120,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             st.plotly_chart(px.bar(g_chart, x="Category", y="items_sold", title="Items Sold (by Category)"),
                             use_container_width=True)
         with c2:
-            # 对daily_sales进行四舍五入
-            g_chart["daily_sales"] = g_chart["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+            # daily_sales 已经在行级别进行了四舍五入，这里只需要确保汇总正确
             st.plotly_chart(px.bar(g_chart, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
                             use_container_width=True)
     else:
@@ -137,49 +131,49 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     bar_cats = ["Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"]
     retail_cats = [c for c in df["Category"].unique() if c not in bar_cats]
 
-    # helper: 根据时间范围计算汇总数据
+    # helper: 根据时间范围计算汇总数据 - 使用与 high_level.py 一致的逻辑
     def time_range_summary(data, cats, range_type, start_dt, end_dt):
         sub = data[data["Category"].isin(cats)].copy()
         if sub.empty:
             return pd.DataFrame()
 
-        # 根据时间范围类型进行不同的聚合
-        if range_type in ["WTD", "MTD", "YTD", "Custom dates"]:
-            # 对于这些范围，直接汇总整个时间段的数据
-            summary = sub.groupby("Category", as_index=False).agg(
-                items_sold=("Qty", "sum"),
-                daily_sales=("Daily Sales", "sum")
-            )
+        # 对于所有范围，直接汇总整个时间段的数据
+        summary = sub.groupby("Category", as_index=False).agg(
+            items_sold=("Qty", "sum"),
+            daily_sales=("Daily Sales", "sum")
+        )
 
-            # 计算与前一个相同长度时间段的对比
-            if start_dt and end_dt:
-                time_diff = end_dt - start_dt
-                prev_start = start_dt - time_diff
-                prev_end = start_dt - timedelta(days=1)
+        # 计算与前一个相同长度时间段的对比
+        if start_dt and end_dt:
+            time_diff = end_dt - start_dt
+            prev_start = start_dt - time_diff
+            prev_end = start_dt - timedelta(days=1)
 
-                # 获取前一个时间段的数据
-                prev_mask = (tx["Datetime"] >= prev_start) & (tx["Datetime"] <= prev_end)
-                prev_data = tx.loc[prev_mask].copy()
+            # 获取前一个时间段的数据
+            prev_mask = (tx["Datetime"] >= prev_start) & (tx["Datetime"] <= prev_end)
+            prev_data = tx.loc[prev_mask].copy()
 
-                # 处理前一个时间段的数据
-                if not prev_data.empty:
-                    prev_data["Tax"] = pd.to_numeric(
-                        prev_data["Tax"].astype(str).str.replace(r'[^\d.-]', '', regex=True),
-                        errors="coerce"
-                    ).fillna(0)
-                    prev_data["Net Sales"] = pd.to_numeric(prev_data.get("Net Sales"), errors="coerce").fillna(0.0)
-                    prev_data["Daily Sales"] = prev_data["Net Sales"] + prev_data["Tax"]
+            # 处理前一个时间段的数据 - 使用相同的计算逻辑
+            if not prev_data.empty:
+                prev_data["Tax"] = pd.to_numeric(
+                    prev_data["Tax"].astype(str).str.replace(r'[^\d.-]', '', regex=True),
+                    errors="coerce"
+                ).fillna(0)
+                prev_data["Gross Sales"] = pd.to_numeric(prev_data.get("Gross Sales"), errors="coerce").fillna(0.0)
+                prev_data["Daily Sales"] = prev_data["Gross Sales"] - prev_data["Tax"]
+                prev_data["Daily Sales"] = prev_data["Daily Sales"].apply(
+                    lambda x: proper_round(x) if pd.notna(x) else x)
 
-                    prev_summary = prev_data[prev_data["Category"].isin(cats)].groupby("Category", as_index=False).agg(
-                        prior_daily_sales=("Daily Sales", "sum")
-                    )
+                prev_summary = prev_data[prev_data["Category"].isin(cats)].groupby("Category", as_index=False).agg(
+                    prior_daily_sales=("Daily Sales", "sum")
+                )
 
-                    summary = summary.merge(prev_summary, on="Category", how="left")
-                    summary["prior_daily_sales"] = summary["prior_daily_sales"].fillna(0)
-                else:
-                    summary["prior_daily_sales"] = 0
+                summary = summary.merge(prev_summary, on="Category", how="left")
+                summary["prior_daily_sales"] = summary["prior_daily_sales"].fillna(0)
             else:
                 summary["prior_daily_sales"] = 0
+        else:
+            summary["prior_daily_sales"] = 0
 
         # 计算周变化
         MIN_BASE = 50
@@ -195,6 +189,11 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             summary["per_day"] = summary["items_sold"] / days_count
         else:
             summary["per_day"] = summary["items_sold"] / 7  # 默认按7天计算
+
+        # 应用四舍五入
+        summary["items_sold"] = summary["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+        summary["daily_sales"] = summary["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+        summary["per_day"] = summary["per_day"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
 
         return summary
 
@@ -219,11 +218,6 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     st.subheader("📊 Bar Categories")
     bar_df = time_range_summary(df, bar_cats, range_opt, start_date, end_date)
     if not bar_df.empty:
-        # 对数值进行四舍五入
-        bar_df["items_sold"] = bar_df["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        bar_df["daily_sales"] = bar_df["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        bar_df["per_day"] = bar_df["per_day"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-
         bar_df = bar_df.rename(columns={
             "Category": "Row Labels",
             "items_sold": "Sum of Items Sold",
@@ -239,31 +233,20 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             use_container_width=True
         )
 
-
     else:
         st.info("No data for Bar categories.")
 
     # ---------------- Retail table + Multiselect ----------------
     st.subheader("📊 Retail Categories")
-    all_retail_cats = sorted(df[df["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
 
-    # 使用紧凑的三列布局
-    retail_col1, retail_col2, retail_col3 = st.columns([1, 1, 1])
-    with retail_col1:
-        sel_retail_cats = persisting_multiselect(
-            "Select Retail Categories",
-            all_retail_cats,
-            key="sr_retail_cats",
-            default=[]
-        )
+    # 🔹 使用与 high_level.py 一致的布局和格式
+    col_retail, _ = st.columns([1, 2])
+    with col_retail:
+        all_retail_cats = sorted(df[df["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
+        sel_retail_cats = persisting_multiselect("Select Retail Categories", all_retail_cats, key="sr_retail_cats")
 
     retail_df = time_range_summary(df, retail_cats, range_opt, start_date, end_date)
     if not retail_df.empty:
-        # 对数值进行四舍五入
-        retail_df["items_sold"] = retail_df["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        retail_df["daily_sales"] = retail_df["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        retail_df["per_day"] = retail_df["per_day"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-
         retail_df = retail_df.rename(columns={
             "Category": "Row Labels",
             "items_sold": "Sum of Items Sold",
