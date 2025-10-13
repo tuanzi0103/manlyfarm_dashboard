@@ -126,6 +126,7 @@ def get_high_level_data():
     return daily, category
 
 
+@st.cache_data
 def _prepare_inventory_grouped(inv: pd.DataFrame):
     if inv is None or inv.empty:
         return pd.DataFrame(), None
@@ -190,7 +191,231 @@ def _prepare_inventory_grouped(inv: pd.DataFrame):
     latest_date = g["date"].max() if not g.empty else None
     return g, latest_date
 
-# 移除 @st.cache_data 装饰器，因为函数中包含 widgets
+
+@st.cache_data
+def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel, custom_dates_selected, t1, t2):
+    """准备图表数据的缓存函数，不包含小部件"""
+    if not time_range or not data_sel or not cats_sel:
+        return None
+
+    # 首先获取完整的数据用于计算滚动平均
+    daily_full = daily.copy()
+    grouped_tx_full = category_tx.copy()
+
+    # 获取当前日期
+    today = pd.Timestamp.today().normalize()
+
+    # 计算时间范围筛选条件
+    start_of_week = today - pd.Timedelta(days=today.weekday())
+    start_of_month = today.replace(day=1)
+    start_of_year = today.replace(month=1, day=1)
+
+    # 应用时间范围筛选到daily数据
+    daily_filtered = daily.copy()
+    grouped_tx = category_tx.copy()
+
+    if "WTD" in time_range:
+        daily_filtered = daily_filtered[daily_filtered["date"] >= start_of_week]
+        grouped_tx = grouped_tx[grouped_tx["date"] >= start_of_week]
+    if "MTD" in time_range:
+        daily_filtered = daily_filtered[daily_filtered["date"] >= start_of_month]
+        grouped_tx = grouped_tx[grouped_tx["date"] >= start_of_month]
+    if "YTD" in time_range:
+        daily_filtered = daily_filtered[daily_filtered["date"] >= start_of_year]
+        grouped_tx = grouped_tx[grouped_tx["date"] >= start_of_year]
+    if custom_dates_selected and t1 and t2:
+        t1_ts = pd.to_datetime(t1)
+        t2_ts = pd.to_datetime(t2)
+        daily_filtered = daily_filtered[
+            (daily_filtered["date"] >= t1_ts) & (daily_filtered["date"] <= t2_ts)]
+        grouped_tx = grouped_tx[
+            (grouped_tx["date"] >= t1_ts) & (grouped_tx["date"] <= t2_ts)]
+
+    grouped_inv = inv_grouped.copy()
+    # 对库存数据应用相同的时间范围筛选
+    if not grouped_inv.empty:
+        if "WTD" in time_range:
+            grouped_inv = grouped_inv[grouped_inv["date"] >= start_of_week]
+        if "MTD" in time_range:
+            grouped_inv = grouped_inv[grouped_inv["date"] >= start_of_month]
+        if "YTD" in time_range:
+            grouped_inv = grouped_inv[grouped_inv["date"] >= start_of_year]
+        if custom_dates_selected and t1 and t2:
+            grouped_inv = grouped_inv[
+                (grouped_inv["date"] >= pd.to_datetime(t1)) & (grouped_inv["date"] <= pd.to_datetime(t2))]
+
+    small_cats = [c for c in cats_sel if c not in ("bar", "retail", "total")]
+    parts_tx = []
+
+    if small_cats:
+        parts_tx.append(grouped_tx[grouped_tx["Category"].isin(small_cats)])
+
+    # === 应用新的计算逻辑 ===
+    if "bar" in cats_sel:
+        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+        bar_tx = grouped_tx[grouped_tx["Category"].isin(bar_cats)].copy()
+        if not bar_tx.empty:
+            # 修改：先将五类数据按日期聚合，再设置为bar
+            bar_tx_aggregated = bar_tx.groupby("date").agg({
+                "net_sales_with_tax": "sum",
+                "net_sales": "sum",
+                "total_tax": "sum",
+                "transactions": "sum",
+                "avg_txn": "mean",
+                "gross": "sum",
+                "qty": "sum"
+            }).reset_index()
+            bar_tx_aggregated["Category"] = "bar"
+            parts_tx.append(bar_tx_aggregated)
+
+    if "retail" in cats_sel:
+        retail_cats = {"Retail"}
+        retail_tx = grouped_tx[grouped_tx["Category"].isin(retail_cats)].copy()
+        if not retail_tx.empty:
+            retail_tx["Category"] = "retail"
+            parts_tx.append(retail_tx)
+
+    if "total" in cats_sel:
+        total_tx = daily_filtered.copy()
+        total_tx["Category"] = "total"
+        parts_tx.append(total_tx)
+
+    if not parts_tx:
+        return None
+
+    df_plot = pd.concat(parts_tx, ignore_index=True)
+
+    # === 数据映射 ===
+    data_map = {
+        "Daily Net Sales": "net_sales_with_tax",
+        "Daily Transactions": "transactions",
+        "Avg Transaction": "avg_txn",
+        "3M Avg": "net_sales_with_tax",
+        "6M Avg": "net_sales_with_tax",
+        "Items Sold": "qty",
+    }
+
+    # 处理滚动平均
+    if "3M Avg" in data_sel or "6M Avg" in data_sel:
+        # 为每个类别计算滚动平均
+        df_plot_rolling = df_plot.copy()
+        df_plot_rolling = df_plot_rolling.sort_values(["Category", "date"])
+
+        # 使用完整数据计算滚动平均
+        df_full_rolling = pd.concat([
+            # 修改：bar类别需要先聚合五类数据
+            grouped_tx_full[grouped_tx_full["Category"].isin(bar_cats)].groupby("date").agg({
+                "net_sales_with_tax": "sum",
+                "net_sales": "sum",
+                "total_tax": "sum",
+                "transactions": "sum",
+                "avg_txn": "mean",
+                "gross": "sum",
+                "qty": "sum"
+            }).reset_index().assign(Category="bar") if cat == "bar" else
+            grouped_tx_full.assign(Category="retail") if cat == "retail" else
+            daily_full.assign(Category="total") if cat == "total" else
+            grouped_tx_full[grouped_tx_full["Category"] == cat].copy()
+            for cat in cats_sel
+        ], ignore_index=True)
+
+        df_full_rolling = df_full_rolling.sort_values(["Category", "date"])
+
+        # 计算滚动平均
+        window_3m = 90
+        window_6m = 180
+
+        df_full_rolling["3M Avg"] = df_full_rolling.groupby("Category")["net_sales_with_tax"].transform(
+            lambda x: x.rolling(window_3m, min_periods=1).mean()
+        )
+        df_full_rolling["6M Avg"] = df_full_rolling.groupby("Category")["net_sales_with_tax"].transform(
+            lambda x: x.rolling(window_6m, min_periods=1).mean()
+        )
+
+        # 应用时间范围筛选到滚动平均数据
+        df_full_rolling_filtered = df_full_rolling.copy()
+        if "WTD" in time_range:
+            df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_week]
+        if "MTD" in time_range:
+            df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_month]
+        if "YTD" in time_range:
+            df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_year]
+        if custom_dates_selected and t1 and t2:
+            df_full_rolling_filtered = df_full_rolling_filtered[
+                (df_full_rolling_filtered["date"] >= pd.to_datetime(t1)) &
+                (df_full_rolling_filtered["date"] <= pd.to_datetime(t2))
+                ]
+
+        # 合并滚动平均数据到主数据框
+        df_plot = df_plot.merge(
+            df_full_rolling_filtered[["date", "Category", "3M Avg", "6M Avg"]],
+            on=["date", "Category"], how="left"
+        )
+
+    # 处理库存数据
+    if "Inventory Value" in data_sel or "Profit (Amount)" in data_sel:
+        if grouped_inv is not None and not grouped_inv.empty:
+            # 确保库存数据有相同的列结构
+            grouped_inv_plot = grouped_inv.copy()
+            # 重命名列以匹配交易数据
+            grouped_inv_plot = grouped_inv_plot.rename(columns={
+                "Inventory Value": "inventory_value",
+                "Profit": "profit_amount"
+            })
+            # 添加缺失的列
+            for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty"]:
+                grouped_inv_plot[col] = 0
+
+            # 如果选择了库存相关的数据，将库存数据合并到主数据框
+            if small_cats:
+                inv_small = grouped_inv_plot[grouped_inv_plot["Category"].isin(small_cats)]
+                df_plot = pd.concat([df_plot, inv_small], ignore_index=True)
+
+            if "bar" in cats_sel:
+                bar_inv = grouped_inv_plot[grouped_inv_plot["Category"].isin(bar_cats)].copy()
+                if not bar_inv.empty:
+                    bar_inv["Category"] = "bar"
+                    df_plot = pd.concat([df_plot, bar_inv], ignore_index=True)
+
+            if "retail" in cats_sel:
+                retail_inv = grouped_inv_plot[grouped_inv_plot["Category"].isin(["Retail"])].copy()
+                if not retail_inv.empty:
+                    retail_inv["Category"] = "retail"
+                    df_plot = pd.concat([df_plot, retail_inv], ignore_index=True)
+
+            if "total" in cats_sel:
+                total_inv = grouped_inv_plot.copy()
+                total_inv_sum = total_inv.groupby("date").agg({
+                    "inventory_value": "sum",
+                    "profit_amount": "sum"
+                }).reset_index()
+                total_inv_sum["Category"] = "total"
+                # 添加缺失的列
+                for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty"]:
+                    total_inv_sum[col] = 0
+                df_plot = pd.concat([df_plot, total_inv_sum], ignore_index=True)
+
+    # 确保数据列存在
+    for col in data_map.values():
+        if col not in df_plot.columns:
+            df_plot[col] = 0
+
+    # 添加库存数据列
+    if "inventory_value" not in df_plot.columns:
+        df_plot["inventory_value"] = 0
+    if "profit_amount" not in df_plot.columns:
+        df_plot["profit_amount"] = 0
+
+    # 扩展数据映射
+    data_map_extended = {
+        **data_map,
+        "Inventory Value": "inventory_value",
+        "Profit (Amount)": "profit_amount"
+    }
+
+    return df_plot, data_map_extended
+
+
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     st.header("📊 High Level Report")
 
@@ -373,222 +598,16 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     else:
         has_valid_custom_dates = True
 
+    # 使用缓存的函数准备图表数据
     if has_time_range and has_data_sel and has_cats_sel and has_valid_custom_dates:
-        # 首先获取完整的数据用于计算滚动平均
-        daily_full = daily.copy()
-        grouped_tx_full = category_tx.copy()
+        result = prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
+                                    custom_dates_selected, t1, t2)
 
-        # 获取当前日期
-        today = pd.Timestamp.today().normalize()
-
-        # 计算时间范围筛选条件
-        start_of_week = today - pd.Timedelta(days=today.weekday())
-        start_of_month = today.replace(day=1)
-        start_of_year = today.replace(month=1, day=1)
-
-        # 应用时间范围筛选到daily数据
-        daily_filtered = daily.copy()
-        grouped_tx = category_tx.copy()
-
-        if "WTD" in time_range:
-            daily_filtered = daily_filtered[daily_filtered["date"] >= start_of_week]
-            grouped_tx = grouped_tx[grouped_tx["date"] >= start_of_week]
-        if "MTD" in time_range:
-            daily_filtered = daily_filtered[daily_filtered["date"] >= start_of_month]
-            grouped_tx = grouped_tx[grouped_tx["date"] >= start_of_month]
-        if "YTD" in time_range:
-            daily_filtered = daily_filtered[daily_filtered["date"] >= start_of_year]
-            grouped_tx = grouped_tx[grouped_tx["date"] >= start_of_year]
-        if custom_dates_selected and t1 and t2:
-            t1_ts = pd.to_datetime(t1)
-            t2_ts = pd.to_datetime(t2)
-            daily_filtered = daily_filtered[
-                (daily_filtered["date"] >= t1_ts) & (daily_filtered["date"] <= t2_ts)]
-            grouped_tx = grouped_tx[
-                (grouped_tx["date"] >= t1_ts) & (grouped_tx["date"] <= t2_ts)]
-
-        grouped_inv = inv_grouped.copy()
-        # 对库存数据应用相同的时间范围筛选
-        if not grouped_inv.empty:
-            if "WTD" in time_range:
-                grouped_inv = grouped_inv[grouped_inv["date"] >= start_of_week]
-            if "MTD" in time_range:
-                grouped_inv = grouped_inv[grouped_inv["date"] >= start_of_month]
-            if "YTD" in time_range:
-                grouped_inv = grouped_inv[grouped_inv["date"] >= start_of_year]
-            if custom_dates_selected and t1 and t2:
-                grouped_inv = grouped_inv[
-                    (grouped_inv["date"] >= pd.to_datetime(t1)) & (grouped_inv["date"] <= pd.to_datetime(t2))]
-
-        small_cats = [c for c in cats_sel if c not in ("bar", "retail", "total")]
-        parts_tx = []
-
-        if small_cats:
-            parts_tx.append(grouped_tx[grouped_tx["Category"].isin(small_cats)])
-
-        # === 应用新的计算逻辑 ===
-        if "bar" in cats_sel:
-            bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
-            bar_tx = grouped_tx[grouped_tx["Category"].isin(bar_cats)].copy()
-            if not bar_tx.empty:
-                # 修改：先将五类数据按日期聚合，再设置为bar
-                bar_tx_aggregated = bar_tx.groupby("date").agg({
-                    "net_sales_with_tax": "sum",
-                    "net_sales": "sum",
-                    "total_tax": "sum",
-                    "transactions": "sum",
-                    "avg_txn": "mean",
-                    "gross": "sum",
-                    "qty": "sum"
-                }).reset_index()
-                bar_tx_aggregated["Category"] = "bar"
-                parts_tx.append(bar_tx_aggregated)
-
-        if "retail" in cats_sel:
-            retail_cats = {"Retail"}
-            retail_tx = grouped_tx[grouped_tx["Category"].isin(retail_cats)].copy()
-            if not retail_tx.empty:
-                retail_tx["Category"] = "retail"
-                parts_tx.append(retail_tx)
-
-        if "total" in cats_sel:
-            total_tx = daily_filtered.copy()
-            total_tx["Category"] = "total"
-            parts_tx.append(total_tx)
-
-        if not parts_tx:
+        if result is None:
             st.warning("No data for selected categories.")
             return
 
-        df_plot = pd.concat(parts_tx, ignore_index=True)
-
-        # === 数据映射 ===
-        data_map = {
-            "Daily Net Sales": "net_sales_with_tax",
-            "Daily Transactions": "transactions",
-            "Avg Transaction": "avg_txn",
-            "3M Avg": "net_sales_with_tax",
-            "6M Avg": "net_sales_with_tax",
-            "Items Sold": "qty",
-        }
-
-        # 处理滚动平均
-        if "3M Avg" in data_sel or "6M Avg" in data_sel:
-            # 为每个类别计算滚动平均
-            df_plot_rolling = df_plot.copy()
-            df_plot_rolling = df_plot_rolling.sort_values(["Category", "date"])
-
-            # 使用完整数据计算滚动平均
-            df_full_rolling = pd.concat([
-                # 修改：bar类别需要先聚合五类数据
-                grouped_tx_full[grouped_tx_full["Category"].isin(bar_cats)].groupby("date").agg({
-                    "net_sales_with_tax": "sum",
-                    "net_sales": "sum",
-                    "total_tax": "sum",
-                    "transactions": "sum",
-                    "avg_txn": "mean",
-                    "gross": "sum",
-                    "qty": "sum"
-                }).reset_index().assign(Category="bar") if cat == "bar" else
-                grouped_tx_full.assign(Category="retail") if cat == "retail" else
-                daily_full.assign(Category="total") if cat == "total" else
-                grouped_tx_full[grouped_tx_full["Category"] == cat].copy()
-                for cat in cats_sel
-            ], ignore_index=True)
-
-            df_full_rolling = df_full_rolling.sort_values(["Category", "date"])
-
-            # 计算滚动平均
-            window_3m = 90
-            window_6m = 180
-
-            df_full_rolling["3M Avg"] = df_full_rolling.groupby("Category")["net_sales_with_tax"].transform(
-                lambda x: x.rolling(window_3m, min_periods=1).mean()
-            )
-            df_full_rolling["6M Avg"] = df_full_rolling.groupby("Category")["net_sales_with_tax"].transform(
-                lambda x: x.rolling(window_6m, min_periods=1).mean()
-            )
-
-            # 应用时间范围筛选到滚动平均数据
-            df_full_rolling_filtered = df_full_rolling.copy()
-            if "WTD" in time_range:
-                df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_week]
-            if "MTD" in time_range:
-                df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_month]
-            if "YTD" in time_range:
-                df_full_rolling_filtered = df_full_rolling_filtered[df_full_rolling_filtered["date"] >= start_of_year]
-            if custom_dates_selected and t1 and t2:
-                df_full_rolling_filtered = df_full_rolling_filtered[
-                    (df_full_rolling_filtered["date"] >= pd.to_datetime(t1)) &
-                    (df_full_rolling_filtered["date"] <= pd.to_datetime(t2))
-                    ]
-
-            # 合并滚动平均数据到主数据框
-            df_plot = df_plot.merge(
-                df_full_rolling_filtered[["date", "Category", "3M Avg", "6M Avg"]],
-                on=["date", "Category"], how="left"
-            )
-
-        # 处理库存数据
-        if "Inventory Value" in data_sel or "Profit (Amount)" in data_sel:
-            if grouped_inv is not None and not grouped_inv.empty:
-                # 确保库存数据有相同的列结构
-                grouped_inv_plot = grouped_inv.copy()
-                # 重命名列以匹配交易数据
-                grouped_inv_plot = grouped_inv_plot.rename(columns={
-                    "Inventory Value": "inventory_value",
-                    "Profit": "profit_amount"
-                })
-                # 添加缺失的列
-                for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty"]:
-                    grouped_inv_plot[col] = 0
-
-                # 如果选择了库存相关的数据，将库存数据合并到主数据框
-                if small_cats:
-                    inv_small = grouped_inv_plot[grouped_inv_plot["Category"].isin(small_cats)]
-                    df_plot = pd.concat([df_plot, inv_small], ignore_index=True)
-
-                if "bar" in cats_sel:
-                    bar_inv = grouped_inv_plot[grouped_inv_plot["Category"].isin(bar_cats)].copy()
-                    if not bar_inv.empty:
-                        bar_inv["Category"] = "bar"
-                        df_plot = pd.concat([df_plot, bar_inv], ignore_index=True)
-
-                if "retail" in cats_sel:
-                    retail_inv = grouped_inv_plot[grouped_inv_plot["Category"].isin(["Retail"])].copy()
-                    if not retail_inv.empty:
-                        retail_inv["Category"] = "retail"
-                        df_plot = pd.concat([df_plot, retail_inv], ignore_index=True)
-
-                if "total" in cats_sel:
-                    total_inv = grouped_inv_plot.copy()
-                    total_inv_sum = total_inv.groupby("date").agg({
-                        "inventory_value": "sum",
-                        "profit_amount": "sum"
-                    }).reset_index()
-                    total_inv_sum["Category"] = "total"
-                    # 添加缺失的列
-                    for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty"]:
-                        total_inv_sum[col] = 0
-                    df_plot = pd.concat([df_plot, total_inv_sum], ignore_index=True)
-
-        # 确保数据列存在
-        for col in data_map.values():
-            if col not in df_plot.columns:
-                df_plot[col] = 0
-
-        # 添加库存数据列
-        if "inventory_value" not in df_plot.columns:
-            df_plot["inventory_value"] = 0
-        if "profit_amount" not in df_plot.columns:
-            df_plot["profit_amount"] = 0
-
-        # 扩展数据映射
-        data_map_extended = {
-            **data_map,
-            "Inventory Value": "inventory_value",
-            "Profit (Amount)": "profit_amount"
-        }
+        df_plot, data_map_extended = result
 
         # 🔹 修复2：把所有data type都展示在同一个折线图里
         if data_sel:
