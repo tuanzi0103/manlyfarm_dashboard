@@ -34,7 +34,7 @@ def persisting_multiselect(label, options, key, default=None):
 
 
 # === 预加载所有数据 ===
-@st.cache_data(ttl=300)  # 5分钟缓存
+@st.cache_data(ttl=600, show_spinner=False)
 def preload_all_data():
     """预加载所有需要的数据"""
     db = get_db()
@@ -118,18 +118,15 @@ def preload_all_data():
 
     if not daily.empty:
         daily["date"] = pd.to_datetime(daily["date"])
-    if not category.empty:
-        category["date"] = pd.to_datetime(category["date"])
-
-    # 计算滚动平均值
-    if not daily.empty:
         daily = daily.sort_values("date")
+        # 计算滚动平均值
         daily["3M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=90, min_periods=1).mean()
         daily["6M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=180, min_periods=1).mean()
 
-    # 为分类数据也计算滚动平均
     if not category.empty:
+        category["date"] = pd.to_datetime(category["date"])
         category = category.sort_values(["Category", "date"])
+        # 为分类数据也计算滚动平均
         category["3M_Avg_Rolling"] = category.groupby("Category")["net_sales_with_tax"].transform(
             lambda x: x.rolling(window=90, min_periods=1).mean()
         )
@@ -140,7 +137,7 @@ def preload_all_data():
     return daily, category
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600, show_spinner=False)
 def _prepare_inventory_grouped(inv: pd.DataFrame):
     if inv is None or inv.empty:
         return pd.DataFrame(), None
@@ -206,9 +203,10 @@ def _prepare_inventory_grouped(inv: pd.DataFrame):
     return g, latest_date
 
 
-@st.cache_data(ttl=300)
-def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel, custom_dates_selected, t1, t2):
-    """准备图表数据的缓存函数，不包含小部件"""
+@st.cache_data(ttl=300, show_spinner=False)
+def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
+                            custom_dates_selected=False, t1=None, t2=None):
+    """快速准备图表数据"""
     if not time_range or not data_sel or not cats_sel:
         return None
 
@@ -260,32 +258,78 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
     if small_cats:
         parts_tx.append(grouped_tx[grouped_tx["Category"].isin(small_cats)])
 
-    # === 应用新的计算逻辑 ===
+    # 定义bar分类
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+    # 处理bar分类
     if "bar" in cats_sel:
-        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
         bar_tx = grouped_tx[grouped_tx["Category"].isin(bar_cats)].copy()
         if not bar_tx.empty:
-            # 修改：先将五类数据按日期聚合，再设置为bar
             bar_tx_aggregated = bar_tx.groupby("date").agg({
                 "net_sales_with_tax": "sum",
-                "net_sales": "sum",
-                "total_tax": "sum",
                 "transactions": "sum",
                 "avg_txn": "mean",
-                "gross": "sum",
                 "qty": "sum",
-                "3M_Avg_Rolling": "mean",  # 添加滚动平均列
-                "6M_Avg_Rolling": "mean"  # 添加滚动平均列
+                "3M_Avg_Rolling": "mean",
+                "6M_Avg_Rolling": "mean"
             }).reset_index()
             bar_tx_aggregated["Category"] = "bar"
             parts_tx.append(bar_tx_aggregated)
 
+    # 处理retail分类 = total - bar
     if "retail" in cats_sel:
-        retail_cats = {"Retail"}
-        retail_tx = grouped_tx[grouped_tx["Category"].isin(retail_cats)].copy()
-        if not retail_tx.empty:
-            retail_tx["Category"] = "retail"
-            parts_tx.append(retail_tx)
+        # 获取每日total数据
+        total_daily = daily_filtered.copy()
+        total_daily = total_daily.rename(columns={
+            "net_sales_with_tax": "total_net_sales",
+            "transactions": "total_transactions",
+            "avg_txn": "total_avg_txn",
+            "qty": "total_qty",
+            "3M_Avg_Rolling": "total_3m_avg",
+            "6M_Avg_Rolling": "total_6m_avg"
+        })
+
+        # 获取每日bar数据
+        bar_daily = grouped_tx[grouped_tx["Category"].isin(bar_cats)].groupby("date").agg({
+            "net_sales_with_tax": "sum",
+            "transactions": "sum",
+            "avg_txn": "mean",
+            "qty": "sum",
+            "3M_Avg_Rolling": "mean",
+            "6M_Avg_Rolling": "mean"
+        }).reset_index()
+        bar_daily = bar_daily.rename(columns={
+            "net_sales_with_tax": "bar_net_sales",
+            "transactions": "bar_transactions",
+            "avg_txn": "bar_avg_txn",
+            "qty": "bar_qty",
+            "3M_Avg_Rolling": "bar_3m_avg",
+            "6M_Avg_Rolling": "bar_6m_avg"
+        })
+
+        # 合并total和bar数据
+        retail_data = total_daily.merge(bar_daily, on="date", how="left")
+
+        # 计算retail = total - bar
+        retail_data["net_sales_with_tax"] = retail_data["total_net_sales"] - retail_data["bar_net_sales"].fillna(0)
+        retail_data["transactions"] = retail_data["total_transactions"] - retail_data["bar_transactions"].fillna(0)
+        retail_data["qty"] = retail_data["total_qty"] - retail_data["bar_qty"].fillna(0)
+
+        # 计算平均交易额
+        retail_data["avg_txn"] = retail_data.apply(
+            lambda x: x["net_sales_with_tax"] / x["transactions"] if x["transactions"] > 0 else 0,
+            axis=1
+        )
+
+        # 计算滚动平均
+        retail_data["3M_Avg_Rolling"] = retail_data["total_3m_avg"] - retail_data["bar_3m_avg"].fillna(0)
+        retail_data["6M_Avg_Rolling"] = retail_data["total_6m_avg"] - retail_data["bar_6m_avg"].fillna(0)
+
+        # 只保留需要的列
+        retail_tx = retail_data[
+            ["date", "net_sales_with_tax", "transactions", "avg_txn", "qty", "3M_Avg_Rolling", "6M_Avg_Rolling"]].copy()
+        retail_tx["Category"] = "retail"
+        parts_tx.append(retail_tx)
 
     if "total" in cats_sel:
         total_tx = daily_filtered.copy()
@@ -297,22 +341,22 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
 
     df_plot = pd.concat(parts_tx, ignore_index=True)
 
-    # === 修正的数据映射 - 使用预计算的滚动平均值 ===
-    data_map = {
+    # 数据映射
+    data_map_extended = {
         "Daily Net Sales": "net_sales_with_tax",
         "Daily Transactions": "transactions",
         "Avg Transaction": "avg_txn",
-        "3M Avg": "3M_Avg_Rolling",  # 使用预计算的滚动平均值
-        "6M Avg": "6M_Avg_Rolling",  # 使用预计算的滚动平均值
+        "3M Avg": "3M_Avg_Rolling",
+        "6M Avg": "6M_Avg_Rolling",
         "Items Sold": "qty",
+        "Inventory Value": "inventory_value",
+        "Profit (Amount)": "profit_amount"
     }
 
     # 处理库存数据
-    if "Inventory Value" in data_sel or "Profit (Amount)" in data_sel:
-        if grouped_inv is not None and not grouped_inv.empty:
-            # 确保库存数据有相同的列结构
+    if any(data in ["Inventory Value", "Profit (Amount)"] for data in data_sel):
+        if not grouped_inv.empty:
             grouped_inv_plot = grouped_inv.copy()
-            # 重命名列以匹配交易数据
             grouped_inv_plot = grouped_inv_plot.rename(columns={
                 "Inventory Value": "inventory_value",
                 "Profit": "profit_amount"
@@ -321,7 +365,7 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
             for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty", "3M_Avg_Rolling", "6M_Avg_Rolling"]:
                 grouped_inv_plot[col] = 0
 
-            # 如果选择了库存相关的数据，将库存数据合并到主数据框
+            # 合并库存数据
             if small_cats:
                 inv_small = grouped_inv_plot[grouped_inv_plot["Category"].isin(small_cats)]
                 df_plot = pd.concat([df_plot, inv_small], ignore_index=True)
@@ -333,7 +377,7 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
                     df_plot = pd.concat([df_plot, bar_inv], ignore_index=True)
 
             if "retail" in cats_sel:
-                retail_inv = grouped_inv_plot[grouped_inv_plot["Category"].isin(["Retail"])].copy()
+                retail_inv = grouped_inv_plot[grouped_inv_plot["Category"] == "Retail"].copy()
                 if not retail_inv.empty:
                     retail_inv["Category"] = "retail"
                     df_plot = pd.concat([df_plot, retail_inv], ignore_index=True)
@@ -345,15 +389,14 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
                     "profit_amount": "sum"
                 }).reset_index()
                 total_inv_sum["Category"] = "total"
-                # 添加缺失的列
                 for col in ["net_sales_with_tax", "transactions", "avg_txn", "qty", "3M_Avg_Rolling", "6M_Avg_Rolling"]:
                     total_inv_sum[col] = 0
                 df_plot = pd.concat([df_plot, total_inv_sum], ignore_index=True)
 
-    # 确保数据列存在
-    for col in data_map.values():
-        if col not in df_plot.columns:
-            df_plot[col] = 0
+    # 确保所有需要的列都存在
+    for col_name in data_map_extended.values():
+        if col_name not in df_plot.columns:
+            df_plot[col_name] = 0
 
     # 添加库存数据列
     if "inventory_value" not in df_plot.columns:
@@ -361,20 +404,36 @@ def prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, ca
     if "profit_amount" not in df_plot.columns:
         df_plot["profit_amount"] = 0
 
-    # 扩展数据映射
-    data_map_extended = {
-        **data_map,
-        "Inventory Value": "inventory_value",
-        "Profit (Amount)": "profit_amount"
-    }
+    # 创建融合数据框用于图表
+    melted_dfs = []
+    for data_type in data_sel:
+        col_name = data_map_extended.get(data_type)
+        if col_name and col_name in df_plot.columns:
+            temp_df = df_plot[["date", "Category", col_name]].copy()
+            temp_df = temp_df.rename(columns={col_name: "value"})
+            temp_df["data_type"] = data_type
 
-    return df_plot, data_map_extended
+            # 对 Daily Net Sales 进行四舍五入取整
+            if data_type == "Daily Net Sales":
+                temp_df["value"] = temp_df["value"].apply(lambda x: proper_round(x) if not pd.isna(x) else 0)
+
+            # 放宽过滤条件
+            temp_df = temp_df[temp_df["value"].notna()]
+            if not temp_df.empty:
+                melted_dfs.append(temp_df)
+
+    if melted_dfs:
+        combined_df = pd.concat(melted_dfs, ignore_index=True)
+        combined_df["series"] = combined_df["Category"] + " - " + combined_df["data_type"]
+        return combined_df
+
+    return None
 
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     st.header("📊 High Level Report")
 
-    # 使用预加载的数据
+    # 预加载所有数据
     with st.spinner("Loading data..."):
         daily, category_tx = preload_all_data()
         inv_grouped, inv_latest_date = _prepare_inventory_grouped(inv)
@@ -395,10 +454,6 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # 筛选选定日期的数据
     df_selected_date = daily[daily["date"] == selected_date_ts]
-
-    today = pd.Timestamp.today().normalize()
-    latest_date_tx = daily["date"].max()
-    df_latest_tx = daily[daily["date"] == latest_date_tx]
 
     # === 计算客户数量 ===
     def calculate_customer_count(tx_df, selected_date):
@@ -432,14 +487,13 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         return len(unique_customers)
 
     # === KPI（交易，口径按小票） ===
-    # 使用选定日期的数据 - 确保使用 net_sales_with_tax (Gross Sales - Tax)
     kpis_main = {
         "Daily Net Sales": proper_round(df_selected_date["net_sales_with_tax"].sum()),
         "Daily Transactions": df_selected_date["transactions"].sum(),
         "Number of Customers": calculate_customer_count(tx, selected_date),
         "Avg Transaction": df_selected_date["avg_txn"].mean(),
-        "3M Avg": proper_round(daily["3M_Avg_Rolling"].iloc[-1]),  # 使用预计算的滚动平均值
-        "6M Avg": proper_round(daily["6M_Avg_Rolling"].iloc[-1]),  # 使用预计算的滚动平均值
+        "3M Avg": proper_round(daily["3M_Avg_Rolling"].iloc[-1]),
+        "6M Avg": proper_round(daily["6M_Avg_Rolling"].iloc[-1]),
         "Items Sold": df_selected_date["qty"].sum(),
     }
 
@@ -467,11 +521,9 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             idx = row + i
             if idx < len(labels_values):
                 label, val = labels_values[idx]
-                # 使用标准的四舍五入方法
                 if pd.isna(val):
                     display = "-"
                 else:
-                    # 去掉美元符号，并为 Avg Transaction 添加两位小数
                     if label == "Avg Transaction":
                         display = f"${val:,.2f}"
                     elif label in ["Daily Net Sales", "3M Avg", "6M Avg", "Inventory Value", "Profit (Amount)"]:
@@ -489,7 +541,6 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # === 交互选择 ===
     st.subheader("🔍 Select Parameters")
 
-    # 🔹 用三列布局缩短下拉框宽度
     col1, col2, col3 = st.columns([1, 1, 1])
 
     # === 第一列：时间范围 ===
@@ -507,18 +558,13 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # === 第三列：分类 ===
     with col3:
-        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
-
         if category_tx is None or category_tx.empty:
             st.info("No category breakdown available.")
             return
 
         all_cats_tx = sorted(category_tx["Category"].fillna("Unknown").unique().tolist())
-
-        # 调整选项顺序：bar, retail, total 在最上面，然后是其他类别
         special_cats = ["bar", "retail", "total"]
         all_cats_extended = special_cats + sorted([c for c in all_cats_tx if c not in special_cats])
-
         cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats")
 
     # === 自定义日期范围选择 ===
@@ -543,7 +589,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 key="date_to"
             )
 
-    # 修复1：修正条件判断逻辑
+    # 检查是否有有效选择
     has_time_range = bool(time_range)
     has_data_sel = bool(data_sel)
     has_cats_sel = bool(cats_sel)
@@ -554,77 +600,50 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     else:
         has_valid_custom_dates = True
 
-    # 使用缓存的函数准备图表数据
+    # 实时计算图表数据
     if has_time_range and has_data_sel and has_cats_sel and has_valid_custom_dates:
-        with st.spinner("Generating charts..."):
-            result = prepare_chart_data(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
-                                        custom_dates_selected, t1, t2)
+        with st.spinner("Generating chart..."):
+            combined_df = prepare_chart_data_fast(
+                daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
+                custom_dates_selected, t1, t2
+            )
 
-        if result is None:
-            st.warning("No data for selected categories.")
-            return
+        if combined_df is not None and not combined_df.empty:
+            # 立即显示图表
+            fig = px.line(
+                combined_df,
+                x="date",
+                y="value",
+                color="series",
+                title="All Selected Data Types by Category",
+                labels={"date": "Date", "value": "Value", "series": "Series"}
+            )
 
-        df_plot, data_map_extended = result
+            fig.update_layout(
+                xaxis=dict(tickformat="%Y-%m-%d"),
+                hovermode="x unified",
+                height=600
+            )
 
-        # 🔹 修复2：把所有data type都展示在同一个折线图里
-        if data_sel:
-            # 创建融合数据框，将所有选中的数据列合并到一个图中
-            melted_dfs = []
+            st.plotly_chart(fig, use_container_width=True)
 
-            for data_type in data_sel:
-                if data_type not in data_map_extended:
-                    continue
+            # 显示数据表格
+            with st.expander("View combined data for all selected types"):
+                display_df = combined_df.copy()
+                display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
 
-                col_name = data_map_extended[data_type]
-                if col_name not in df_plot.columns:
-                    continue
+                # 对表格中的 Daily Net Sales 也进行四舍五入取整
+                display_df.loc[display_df["data_type"] == "Daily Net Sales", "value"] = display_df.loc[
+                    display_df["data_type"] == "Daily Net Sales", "value"
+                ].apply(lambda x: proper_round(x) if not pd.isna(x) else 0)
 
-                # 为每个数据类型创建子数据框
-                temp_df = df_plot[["date", "Category", col_name]].copy()
-                temp_df = temp_df.rename(columns={col_name: "value"})
-                temp_df["data_type"] = data_type
-
-                # 过滤掉没有数据的行
-                temp_df = temp_df[temp_df["value"].notna() & (temp_df["value"] != 0)]
-
-                if not temp_df.empty:
-                    melted_dfs.append(temp_df)
-
-            if melted_dfs:
-                # 合并所有数据
-                combined_df = pd.concat(melted_dfs, ignore_index=True)
-
-                # 创建图表 - 使用 data_type 和 Category 的组合作为线条
-                combined_df["series"] = combined_df["Category"] + " - " + combined_df["data_type"]
-
-                fig = px.line(
-                    combined_df,
-                    x="date",
-                    y="value",
-                    color="series",
-                    title="All Selected Data Types by Category",
-                    labels={"date": "Date", "value": "Value", "series": "Series"}
-                )
-
-                fig.update_layout(
-                    xaxis=dict(tickformat="%Y-%m-%d"),
-                    hovermode="x unified",
-                    height=600
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
-
-                # 显示数据表格
-                with st.expander("View combined data for all selected types"):
-                    display_df = combined_df.copy()
-                    display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
-                    display_df = display_df.rename(columns={
-                        "date": "Date",
-                        "Category": "Category",
-                        "data_type": "Data Type",
-                        "value": "Value"
-                    })
-                    display_df = display_df.sort_values(["Date", "Category", "Data Type"])
-                    st.dataframe(display_df, use_container_width=True)
-            else:
-                st.warning("No data available for the selected data types.")
+                display_df = display_df.rename(columns={
+                    "date": "Date",
+                    "Category": "Category",
+                    "data_type": "Data Type",
+                    "value": "Value"
+                })
+                display_df = display_df.sort_values(["Date", "Category", "Data Type"])
+                st.dataframe(display_df, use_container_width=True)
+        else:
+            st.warning("No data available for the selected combination.")
