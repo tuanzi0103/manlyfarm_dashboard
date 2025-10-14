@@ -34,6 +34,75 @@ def persisting_multiselect(label, options, key, default=None):
 
 
 # === 预加载所有数据 ===
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _prepare_inventory_grouped(inv: pd.DataFrame):
+    if inv is None or inv.empty:
+        return pd.DataFrame(), None
+
+    df = inv.copy()
+
+    if "source_date" in df.columns:
+        df["date"] = pd.to_datetime(df["source_date"], errors="coerce")
+    else:
+        return pd.DataFrame(), None
+
+    # Category 列
+    if "Categories" in df.columns:
+        df["Category"] = df["Categories"].astype(str)
+    elif "Category" in df.columns:
+        df["Category"] = df["Category"].astype(str)
+    else:
+        df["Category"] = "Unknown"
+
+    # === 用 catalogue 现算 - 应用新的inventory value计算逻辑 ===
+    # 1. 过滤掉 Current Quantity Vie Market & Bar 为负数或0的行
+    df["Quantity"] = pd.to_numeric(df["Current Quantity Vie Market & Bar"], errors="coerce")
+    mask = (df["Quantity"] > 0)  # 只保留正数
+    df = df[mask].copy()
+
+    if df.empty:
+        return pd.DataFrame(), None
+
+    # 2. 把 Default Unit Cost 为空的值补为0
+    df["UnitCost"] = pd.to_numeric(df["Default Unit Cost"], errors="coerce").fillna(0)
+
+    # 3. 计算 inventory value: Default Unit Cost * Current Quantity Vie Market & Bar
+    df["Inventory Value"] = df["UnitCost"] * df["Quantity"]
+
+    # 四舍五入保留整数
+    df["Inventory Value"] = df["Inventory Value"].apply(lambda x: proper_round(x) if not pd.isna(x) else 0)
+
+    # 保留其他计算（如果需要）
+    df["Price"] = pd.to_numeric(df.get("Price", 0), errors="coerce").fillna(0)
+
+    # 修复：检查 TaxFlag 列是否存在，如果不存在则创建默认值
+    if "TaxFlag" not in df.columns:
+        df["TaxFlag"] = "N"  # 默认值，假设不含税
+
+    def calc_retail(row):
+        try:
+            O, AA, tax = row["Price"], row["Quantity"], row["TaxFlag"]
+            return (O / 11 * 10) * AA if tax == "Y" else O * AA
+        except KeyError:
+            # 如果列不存在，直接计算 Price * Quantity
+            return row["Price"] * row["Quantity"]
+
+    df["Retail Total"] = df.apply(calc_retail, axis=1)
+    df["Profit"] = df["Retail Total"] - df["Inventory Value"]
+
+    # 聚合
+    g = (
+        df.groupby(["date", "Category"], as_index=False)[["Inventory Value", "Profit"]]
+        .sum(min_count=1)
+    )
+
+    latest_date = g["date"].max() if not g.empty else None
+    return g, latest_date
+
+
+# === 预加载所有数据 ===
 @st.cache_data(ttl=600, show_spinner=False)
 def preload_all_data():
     """预加载所有需要的数据"""
@@ -135,73 +204,23 @@ def preload_all_data():
         # 移除缺失数据的日期 - 所有分类都过滤
         category = category[~category["date"].isin(pd.to_datetime(missing_dates))]
 
+        # 为每个分类计算滚动平均值
+        category_with_rolling = []
+        for cat in category["Category"].unique():
+            cat_data = category[category["Category"] == cat].copy()
+            # 按日期排序确保滚动计算正确
+            cat_data = cat_data.sort_values("date")
+            # 计算该分类的滚动平均值
+            cat_data["3M_Avg_Rolling"] = cat_data["net_sales_with_tax"].rolling(window=90, min_periods=1,
+                                                                                center=False).mean()
+            cat_data["6M_Avg_Rolling"] = cat_data["net_sales_with_tax"].rolling(window=180, min_periods=1,
+                                                                                center=False).mean()
+            category_with_rolling.append(cat_data)
+
+        # 重新组合数据
+        category = pd.concat(category_with_rolling, ignore_index=True)
+
     return daily, category
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def _prepare_inventory_grouped(inv: pd.DataFrame):
-    if inv is None or inv.empty:
-        return pd.DataFrame(), None
-
-    df = inv.copy()
-
-    if "source_date" in df.columns:
-        df["date"] = pd.to_datetime(df["source_date"], errors="coerce")
-    else:
-        return pd.DataFrame(), None
-
-    # Category 列
-    if "Categories" in df.columns:
-        df["Category"] = df["Categories"].astype(str)
-    elif "Category" in df.columns:
-        df["Category"] = df["Category"].astype(str)
-    else:
-        df["Category"] = "Unknown"
-
-    # === 用 catalogue 现算 - 应用新的inventory value计算逻辑 ===
-    # 1. 过滤掉 Current Quantity Vie Market & Bar 为负数或0的行
-    df["Quantity"] = pd.to_numeric(df["Current Quantity Vie Market & Bar"], errors="coerce")
-    mask = (df["Quantity"] > 0)  # 只保留正数
-    df = df[mask].copy()
-
-    if df.empty:
-        return pd.DataFrame(), None
-
-    # 2. 把 Default Unit Cost 为空的值补为0
-    df["UnitCost"] = pd.to_numeric(df["Default Unit Cost"], errors="coerce").fillna(0)
-
-    # 3. 计算 inventory value: Default Unit Cost * Current Quantity Vie Market & Bar
-    df["Inventory Value"] = df["UnitCost"] * df["Quantity"]
-
-    # 四舍五入保留整数
-    df["Inventory Value"] = df["Inventory Value"].apply(lambda x: proper_round(x) if not pd.isna(x) else 0)
-
-    # 保留其他计算（如果需要）
-    df["Price"] = pd.to_numeric(df.get("Price", 0), errors="coerce").fillna(0)
-
-    # 修复：检查 TaxFlag 列是否存在，如果不存在则创建默认值
-    if "TaxFlag" not in df.columns:
-        df["TaxFlag"] = "N"  # 默认值，假设不含税
-
-    def calc_retail(row):
-        try:
-            O, AA, tax = row["Price"], row["Quantity"], row["TaxFlag"]
-            return (O / 11 * 10) * AA if tax == "Y" else O * AA
-        except KeyError:
-            # 如果列不存在，直接计算 Price * Quantity
-            return row["Price"] * row["Quantity"]
-
-    df["Retail Total"] = df.apply(calc_retail, axis=1)
-    df["Profit"] = df["Retail Total"] - df["Inventory Value"]
-
-    # 聚合
-    g = (
-        df.groupby(["date", "Category"], as_index=False)[["Inventory Value", "Profit"]]
-        .sum(min_count=1)
-    )
-
-    latest_date = g["date"].max() if not g.empty else None
-    return g, latest_date
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -253,14 +272,38 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
             grouped_inv = grouped_inv[
                 (grouped_inv["date"] >= pd.to_datetime(t1)) & (grouped_inv["date"] <= pd.to_datetime(t2))]
 
-    small_cats = [c for c in cats_sel if c not in ("bar", "retail", "total")]
+    # 定义bar分类（这5个分类使用 net_sales + tax 计算）
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+    # 修复：过滤掉没有数据的分类，避免重复显示
+    small_cats = []
+    for c in cats_sel:
+        if c not in ("bar", "retail", "total"):
+            small_cats.append(c)
+
     parts_tx = []
 
     if small_cats:
-        parts_tx.append(grouped_tx[grouped_tx["Category"].isin(small_cats)])
+        # 为小类数据添加滚动平均值
+        small_cats_data = grouped_tx[grouped_tx["Category"].isin(small_cats)].copy()
 
-    # 定义bar分类
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+        # 修复：按日期和分类重新计算 net_sales_with_tax
+        for cat in small_cats:
+            cat_mask = small_cats_data["Category"] == cat
+            if cat not in bar_cats:  # 非bar分类使用 net_sales 列
+                # 按日期分组计算每个日期的 net_sales 总和
+                daily_net_sales = small_cats_data[cat_mask].groupby("date")["net_sales"].sum().reset_index()
+                # 结果四舍五入保留整数
+                daily_net_sales["net_sales_with_tax"] = daily_net_sales["net_sales"].apply(
+                    lambda x: proper_round(x) if not pd.isna(x) else 0
+                )
+
+                # 更新原始数据中的 net_sales_with_tax
+                for _, row in daily_net_sales.iterrows():
+                    date_mask = (small_cats_data["date"] == row["date"]) & (small_cats_data["Category"] == cat)
+                    small_cats_data.loc[date_mask, "net_sales_with_tax"] = row["net_sales_with_tax"]
+
+        parts_tx.append(small_cats_data)
 
     # 处理bar分类 - 重新计算bar的滚动平均
     if "bar" in cats_sel:
@@ -270,7 +313,9 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
             bar_daily_agg = bar_tx.groupby("date").agg({
                 "net_sales_with_tax": "sum",
                 "transactions": "sum",
-                "qty": "sum"
+                "qty": "sum",
+                "3M_Avg_Rolling": "mean",  # 保留原有的滚动平均值
+                "6M_Avg_Rolling": "mean"  # 保留原有的滚动平均值
             }).reset_index()
 
             # 计算bar的平均交易额
@@ -279,7 +324,7 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
                 axis=1
             )
 
-            # 为bar数据计算准确的滚动平均
+            # 为bar数据计算准确的滚动平均（如果需要重新计算）
             bar_daily_agg["3M_Avg_Rolling"] = bar_daily_agg["net_sales_with_tax"].rolling(window=90, min_periods=1,
                                                                                           center=False).mean()
             bar_daily_agg["6M_Avg_Rolling"] = bar_daily_agg["net_sales_with_tax"].rolling(window=180, min_periods=1,
@@ -296,19 +341,25 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
             "net_sales_with_tax": "total_net_sales",
             "transactions": "total_transactions",
             "avg_txn": "total_avg_txn",
-            "qty": "total_qty"
+            "qty": "total_qty",
+            "3M_Avg_Rolling": "total_3M_Avg",
+            "6M_Avg_Rolling": "total_6M_Avg"
         })
 
         # 获取每日bar数据
         bar_daily = grouped_tx[grouped_tx["Category"].isin(bar_cats)].groupby("date").agg({
             "net_sales_with_tax": "sum",
             "transactions": "sum",
-            "qty": "sum"
+            "qty": "sum",
+            "3M_Avg_Rolling": "mean",
+            "6M_Avg_Rolling": "mean"
         }).reset_index()
         bar_daily = bar_daily.rename(columns={
             "net_sales_with_tax": "bar_net_sales",
             "transactions": "bar_transactions",
-            "qty": "bar_qty"
+            "qty": "bar_qty",
+            "3M_Avg_Rolling": "bar_3M_Avg",
+            "6M_Avg_Rolling": "bar_6M_Avg"
         })
 
         # 合并total和bar数据
@@ -319,17 +370,17 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
         retail_data["transactions"] = retail_data["total_transactions"] - retail_data["bar_transactions"].fillna(0)
         retail_data["qty"] = retail_data["total_qty"] - retail_data["bar_qty"].fillna(0)
 
+        # 计算retail的滚动平均值
+        retail_data["3M_Avg_Rolling"] = retail_data["net_sales_with_tax"].rolling(window=90, min_periods=1,
+                                                                                  center=False).mean()
+        retail_data["6M_Avg_Rolling"] = retail_data["net_sales_with_tax"].rolling(window=180, min_periods=1,
+                                                                                  center=False).mean()
+
         # 计算平均交易额
         retail_data["avg_txn"] = retail_data.apply(
             lambda x: x["net_sales_with_tax"] / x["transactions"] if x["transactions"] > 0 else 0,
             axis=1
         )
-
-        # 为retail数据计算准确的滚动平均
-        retail_data["3M_Avg_Rolling"] = retail_data["net_sales_with_tax"].rolling(window=90, min_periods=1,
-                                                                                  center=False).mean()
-        retail_data["6M_Avg_Rolling"] = retail_data["net_sales_with_tax"].rolling(window=180, min_periods=1,
-                                                                                  center=False).mean()
 
         # 只保留需要的列
         retail_tx = retail_data[
@@ -435,6 +486,9 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
         # 确保最终数据中完全移除缺失日期的数据点
         missing_dates = ['2025-08-18', '2025-08-19', '2025-08-20']
         combined_df = combined_df[~combined_df["date"].isin(pd.to_datetime(missing_dates))]
+
+        # 修复：确保日期按正确顺序排序
+        combined_df = combined_df.sort_values("date")
 
         return combined_df
 
@@ -580,9 +634,28 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             st.info("No category breakdown available.")
             return
 
-        all_cats_tx = sorted(category_tx["Category"].fillna("Unknown").unique().tolist())
+        # 过滤掉没有数据的分类 - 修复重复显示问题
+        category_tx["Category"] = category_tx["Category"].astype(str).str.strip()
+        all_cats_tx = (
+            category_tx["Category"]
+            .fillna("Unknown")
+            .drop_duplicates()  # ✅ 去重
+            .sort_values()
+            .tolist()
+        )
+
+        # 只保留有实际数据的分类
+        valid_cats = []
+        seen_cats = set()
+        for cat in all_cats_tx:
+            if cat not in seen_cats:
+                seen_cats.add(cat)
+                cat_data = category_tx[category_tx["Category"] == cat]
+                if not cat_data.empty and cat_data["net_sales_with_tax"].sum() > 0:
+                    valid_cats.append(cat)
+
         special_cats = ["bar", "retail", "total"]
-        all_cats_extended = special_cats + sorted([c for c in all_cats_tx if c not in special_cats])
+        all_cats_extended = special_cats + sorted([c for c in valid_cats if c not in special_cats])
         cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats")
 
     # === 自定义日期范围选择 ===
@@ -627,6 +700,9 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             )
 
         if combined_df is not None and not combined_df.empty:
+            # 修复：确保图表中的日期按正确顺序显示
+            combined_df = combined_df.sort_values("date")
+
             # 立即显示图表
             fig = px.line(
                 combined_df,
@@ -662,7 +738,10 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                     "data_type": "Data Type",
                     "value": "Value"
                 })
-                display_df = display_df.sort_values(["Date", "Category", "Data Type"])
+                # 修复：按日期正确排序
+                display_df["Date_dt"] = pd.to_datetime(display_df["Date"], format='%d/%m/%Y')
+                display_df = display_df.sort_values(["Date_dt", "Category", "Data Type"])
+                display_df = display_df.drop("Date_dt", axis=1)
                 st.dataframe(display_df, use_container_width=True)
         else:
             st.warning("No data available for the selected combination.")

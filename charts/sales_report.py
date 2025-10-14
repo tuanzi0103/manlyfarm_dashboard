@@ -39,7 +39,7 @@ def preload_all_data():
     """预加载所有需要的数据 - 与high_level.py相同的函数"""
     db = get_db()
 
-    # 加载交易数据
+    # 加载交易数据（包含日期信息）
     daily_sql = """
     WITH transaction_totals AS (
         SELECT 
@@ -113,8 +113,23 @@ def preload_all_data():
     ORDER BY date, Category;
     """
 
+    # 加载原始交易数据用于获取商品项（包含日期信息）
+    item_sql = """
+    SELECT 
+        date(Datetime) as date,
+        Category,
+        Item,
+        [Net Sales],
+        Tax,
+        Qty,
+        [Gross Sales]
+    FROM transactions
+    WHERE Category IS NOT NULL AND Item IS NOT NULL
+    """
+
     daily = pd.read_sql(daily_sql, db)
     category = pd.read_sql(category_sql, db)
+    items_df = pd.read_sql(item_sql, db)
 
     if not daily.empty:
         daily["date"] = pd.to_datetime(daily["date"])
@@ -131,7 +146,109 @@ def preload_all_data():
         # 移除缺失数据的日期 - 所有分类都过滤
         category = category[~category["date"].isin(pd.to_datetime(missing_dates))]
 
-    return daily, category
+    if not items_df.empty:
+        items_df["date"] = pd.to_datetime(items_df["date"])
+        # 移除缺失数据的日期 - 商品数据也过滤
+        items_df = items_df[~items_df["date"].isin(pd.to_datetime(missing_dates))]
+
+    return daily, category, items_df
+
+
+def extract_item_name(item):
+    """提取商品名称，移除毫升/升等容量信息"""
+    if pd.isna(item):
+        return item
+
+    # 移除容量信息（数字后跟ml/L等）
+    import re
+    # 匹配数字后跟ml/L/升/毫升等模式
+    pattern = r'\s*\d+\.?\d*\s*(ml|mL|L|升|毫升)\s*$'
+    cleaned = re.sub(pattern, '', str(item), flags=re.IGNORECASE)
+
+    # 移除首尾空格
+    return cleaned.strip()
+
+
+def prepare_sales_data(df_filtered):
+    """使用与 high_level.py 相同的逻辑准备销售数据"""
+    # 定义bar分类（与high_level.py一致）
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+    # 复制数据避免修改原数据
+    df = df_filtered.copy()
+
+    # 对于bar分类，使用 net_sales_with_tax（已经包含税）
+    # 对于非bar分类，使用 net_sales（不含税）
+    df["final_sales"] = df.apply(
+        lambda row: row["net_sales_with_tax"] if row["Category"] in bar_cats else row["net_sales"],
+        axis=1
+    )
+
+    # 应用四舍五入（与high_level.py一致）
+    df["final_sales"] = df["final_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+    df["qty"] = df["qty"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+
+    return df
+
+
+def calculate_item_sales(items_df, selected_categories, selected_items, start_date=None, end_date=None):
+    """计算指定category和items的销售数据"""
+    if not selected_categories or not selected_items:
+        return pd.DataFrame()
+
+    # 复制数据避免修改原数据
+    filtered_items = items_df.copy()
+
+    # 应用日期筛选
+    if start_date is not None and end_date is not None:
+        mask = (filtered_items["date"] >= pd.to_datetime(start_date)) & (
+                filtered_items["date"] <= pd.Timestamp(end_date))
+        filtered_items = filtered_items.loc[mask]
+
+    # 过滤指定category的商品
+    filtered_items = filtered_items[filtered_items["Category"].isin(selected_categories)]
+
+    # 清理商品名称用于匹配
+    filtered_items["clean_item"] = filtered_items["Item"].apply(extract_item_name)
+
+    # 应用商品项筛选
+    filtered_items = filtered_items[filtered_items["clean_item"].isin(selected_items)]
+
+    if filtered_items.empty:
+        return pd.DataFrame()
+
+    # 定义bar分类
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+    # 计算每个商品项的销售数据
+    def calculate_sales(row):
+        if row["Category"] in bar_cats:
+            # Bar分类：使用Net Sales + Tax
+            tax_value = 0
+            if pd.notna(row["Tax"]):
+                try:
+                    tax_str = str(row["Tax"]).replace('$', '').replace(',', '')
+                    tax_value = float(tax_str) if tax_str else 0
+                except:
+                    tax_value = 0
+            return proper_round(row["Net Sales"] + tax_value)
+        else:
+            # 非Bar分类：直接使用Net Sales
+            return proper_round(row["Net Sales"])
+
+    filtered_items["final_sales"] = filtered_items.apply(calculate_sales, axis=1)
+
+    # 按商品项汇总
+    item_summary = filtered_items.groupby(["Category", "clean_item"]).agg({
+        "Qty": "sum",
+        "final_sales": "sum"
+    }).reset_index()
+
+    return item_summary.rename(columns={
+        "clean_item": "Item",
+        "Qty": "Sum of Items Sold",
+        "final_sales": "Sum of Daily Sales"
+    })[["Category", "Item", "Sum of Items Sold", "Sum of Daily Sales"]]
 
 
 def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
@@ -139,7 +256,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # 预加载所有数据 - 使用与high_level.py相同的数据源
     with st.spinner("Loading data..."):
-        daily, category_tx = preload_all_data()
+        daily, category_tx, items_df = preload_all_data()
 
     if category_tx.empty:
         st.info("No category data available.")
@@ -161,16 +278,20 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # 使用三列布局，与 "Select range" 一致
         col_from, col_to, _ = st.columns([1, 1, 1])
         with col_from:
+            # 改为欧洲日期格式显示
             t1 = st.date_input(
                 "From",
                 value=pd.Timestamp.today().normalize() - pd.Timedelta(days=7),
-                key="sr_date_from"
+                key="sr_date_from",
+                format="DD/MM/YYYY"
             )
         with col_to:
+            # 改为欧洲日期格式显示
             t2 = st.date_input(
                 "To",
                 value=pd.Timestamp.today().normalize(),
-                key="sr_date_to"
+                key="sr_date_to",
+                format="DD/MM/YYYY"
             )
         if t1 and t2:
             start_date, end_date = pd.to_datetime(t1), pd.to_datetime(t2)
@@ -188,44 +309,43 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                 df_filtered["date"] <= pd.Timestamp(end_date))
         df_filtered = df_filtered.loc[mask]
 
+    # 应用数据修复
+    df_filtered_fixed = prepare_sales_data(df_filtered)
+
     # ---------------- Bar Charts ----------------
-    # 使用high_level.py处理好的数据
-    g = df_filtered.groupby("Category", as_index=False).agg(
+    # 使用修复后的数据
+    g = df_filtered_fixed.groupby("Category", as_index=False).agg(
         items_sold=("qty", "sum"),
-        daily_sales=("net_sales_with_tax", "sum")
+        daily_sales=("final_sales", "sum")  # 使用修复后的销售额
     ).sort_values("items_sold", ascending=False)
 
     if not g.empty:
         c1, c2 = st.columns(2)
         with c1:
-            # 对items_sold进行四舍五入
-            g_chart = g.copy()
-            g_chart["items_sold"] = g_chart["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-            st.plotly_chart(px.bar(g_chart, x="Category", y="items_sold", title="Items Sold (by Category)"),
+            st.plotly_chart(px.bar(g, x="Category", y="items_sold", title="Items Sold (by Category)"),
                             use_container_width=True)
         with c2:
-            # daily_sales 使用high_level.py已经计算好的net_sales_with_tax
-            g_chart["daily_sales"] = g_chart["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-            st.plotly_chart(px.bar(g_chart, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
+            st.plotly_chart(px.bar(g, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
                             use_container_width=True)
     else:
         st.info("No data under current filters.")
         return
 
     # ---------------- Group definitions ----------------
-    bar_cats = ["Cafe Drinks", "Smoothie Bar", "Smoothies", "Soups", "Sweet Treats", "Wraps & Salads"]
-    retail_cats = [c for c in df_filtered["Category"].unique() if c not in bar_cats]
+    # 使用与 high_level.py 完全相同的分类定义
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    retail_cats = [c for c in df_filtered_fixed["Category"].unique() if c not in bar_cats]
 
-    # helper: 根据时间范围计算汇总数据 - 使用high_level.py处理好的数据
+    # helper: 根据时间范围计算汇总数据 - 使用修复后的数据
     def time_range_summary(data, cats, range_type, start_dt, end_dt):
         sub = data[data["Category"].isin(cats)].copy()
         if sub.empty:
             return pd.DataFrame()
 
-        # 使用high_level.py处理好的数据直接聚合
+        # 使用修复后的数据聚合
         summary = sub.groupby("Category", as_index=False).agg(
             items_sold=("qty", "sum"),
-            daily_sales=("net_sales_with_tax", "sum")
+            daily_sales=("final_sales", "sum")  # 使用修复后的销售额
         )
 
         # 计算与前一个相同长度时间段的对比
@@ -234,13 +354,17 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             prev_start = start_dt - time_diff
             prev_end = start_dt - timedelta(days=1)
 
-            # 获取前一个时间段的数据 - 使用相同的high_level.py数据源
+            # 获取前一个时间段的数据 - 使用相同的修复逻辑
             prev_mask = (category_tx["date"] >= prev_start) & (category_tx["date"] <= prev_end)
             prev_data = category_tx.loc[prev_mask].copy()
 
-            if not prev_data.empty:
-                prev_summary = prev_data[prev_data["Category"].isin(cats)].groupby("Category", as_index=False).agg(
-                    prior_daily_sales=("net_sales_with_tax", "sum")
+            # 对历史数据也应用相同的修复逻辑
+            prev_data_fixed = prepare_sales_data(prev_data)
+
+            if not prev_data_fixed.empty:
+                prev_summary = prev_data_fixed[prev_data_fixed["Category"].isin(cats)].groupby("Category",
+                                                                                               as_index=False).agg(
+                    prior_daily_sales=("final_sales", "sum")  # 使用修复后的销售额
                 )
 
                 summary = summary.merge(prev_summary, on="Category", how="left")
@@ -258,16 +382,14 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             np.nan
         )
 
-        # 计算日均销量
+        # 计算日均销量 - 四舍五入保留整数
         if start_dt and end_dt:
             days_count = (end_dt - start_dt).days + 1
             summary["per_day"] = summary["items_sold"] / days_count
         else:
             summary["per_day"] = summary["items_sold"] / 7  # 默认按7天计算
 
-        # 应用四舍五入
-        summary["items_sold"] = summary["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        summary["daily_sales"] = summary["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+        # 对 per_day 进行四舍五入保留整数
         summary["per_day"] = summary["per_day"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
 
         return summary
@@ -291,7 +413,8 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Bar table ----------------
     st.subheader("📊 Bar Categories")
-    bar_df = time_range_summary(df_filtered, bar_cats, range_opt, start_date, end_date)
+    bar_df = time_range_summary(df_filtered_fixed, bar_cats, range_opt, start_date, end_date)
+
     if not bar_df.empty:
         bar_df = bar_df.rename(columns={
             "Category": "Row Labels",
@@ -308,24 +431,71 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             use_container_width=True
         )
 
-        # 调试信息：显示Smoothie Bar的总和
-        smoothie_bar_total = bar_df[bar_df["Row Labels"] == "Smoothie Bar"]["Sum of Daily Sales"].sum()
-        st.caption(f"Debug: Smoothie Bar total = ${proper_round(smoothie_bar_total)}")
+        # Bar分类商品项选择 - 使用与 high_level.py 相同的多选框样式
+        st.subheader("📦 Bar Category Items")
 
+        # 选择Bar分类 - 使用三列布局控制长度
+        col_bar1, col_bar2, col_bar3 = st.columns([1, 1, 1])
+        with col_bar1:
+            bar_category_options = sorted(bar_df["Row Labels"].unique())
+            selected_bar_categories = persisting_multiselect(
+                "Select Bar Categories",
+                options=bar_category_options,
+                key="bar_categories_select"
+            )
+
+        # 根据选择的分类显示商品项
+        if selected_bar_categories:
+            # 获取选中分类的所有商品项
+            bar_items_df = items_df[items_df["Category"].isin(selected_bar_categories)].copy()
+            if not bar_items_df.empty:
+                bar_items_df["clean_item"] = bar_items_df["Item"].apply(extract_item_name)
+                bar_item_options = sorted(bar_items_df["clean_item"].dropna().unique())
+
+                # 选择商品项 - 使用三列布局控制长度
+                col_bar_items1, col_bar_items2, col_bar_items3 = st.columns([1, 1, 1])
+                with col_bar_items1:
+                    selected_bar_items = persisting_multiselect(
+                        "Select Items from Bar Categories",
+                        options=bar_item_options,
+                        key="bar_items_select"
+                    )
+
+                # 显示选中的商品项数据
+                if selected_bar_items:
+                    bar_item_summary = calculate_item_sales(
+                        items_df, selected_bar_categories, selected_bar_items, start_date, end_date
+                    )
+
+                    if not bar_item_summary.empty:
+                        st.dataframe(bar_item_summary, use_container_width=True)
+
+                        # 显示小计
+                        total_qty = bar_item_summary["Sum of Items Sold"].sum()
+                        total_sales = bar_item_summary["Sum of Daily Sales"].sum()
+                        st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
+
+                        # 调试信息：显示数据条数
+                        filtered_debug = items_df[
+                            (items_df["Category"].isin(selected_bar_categories)) &
+                            (items_df["Item"].apply(extract_item_name).isin(selected_bar_items))
+                            ]
+                        if start_date is not None and end_date is not None:
+                            mask = (filtered_debug["date"] >= pd.to_datetime(start_date)) & (
+                                    filtered_debug["date"] <= pd.Timestamp(end_date))
+                            filtered_debug = filtered_debug.loc[mask]
+
+                        st.write(f"**Debug:** Found {len(filtered_debug)} transaction records for selected criteria")
+            else:
+                st.info("No items found for selected Bar categories.")
     else:
         st.info("No data for Bar categories.")
 
     # ---------------- Retail table + Multiselect ----------------
     st.subheader("📊 Retail Categories")
 
-    # 🔹 使用与 high_level.py 一致的布局和格式
-    col_retail, _ = st.columns([1, 2])
-    with col_retail:
-        all_retail_cats = sorted(
-            df_filtered[df_filtered["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
-        sel_retail_cats = persisting_multiselect("Select Retail Categories", all_retail_cats, key="sr_retail_cats")
+    retail_df = time_range_summary(df_filtered_fixed, retail_cats, range_opt, start_date, end_date)
 
-    retail_df = time_range_summary(df_filtered, retail_cats, range_opt, start_date, end_date)
     if not retail_df.empty:
         retail_df = retail_df.rename(columns={
             "Category": "Row Labels",
@@ -334,8 +504,6 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             "weekly_change": "Weekly change",
             "per_day": "Per day"
         })
-        if sel_retail_cats:
-            retail_df = retail_df[retail_df["Row Labels"].isin(sel_retail_cats)]
         retail_df["Weekly change"] = retail_df["Weekly change"].apply(format_change)
 
         st.dataframe(
@@ -344,28 +512,68 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             use_container_width=True
         )
 
+        # Retail分类商品项选择 - 使用与 high_level.py 相同的多选框样式
+        st.subheader("📦 Retail Category Items")
+
+        # 选择Retail分类 - 使用三列布局控制长度
+        col_retail1, col_retail2, col_retail3 = st.columns([1, 1, 1])
+        with col_retail1:
+            retail_category_options = sorted(retail_df["Row Labels"].unique())
+            selected_retail_categories = persisting_multiselect(
+                "Select Retail Categories",
+                options=retail_category_options,
+                key="retail_categories_select"
+            )
+
+        # 根据选择的分类显示商品项
+        if selected_retail_categories:
+            # 获取选中分类的所有商品项
+            retail_items_df = items_df[items_df["Category"].isin(selected_retail_categories)].copy()
+            if not retail_items_df.empty:
+                retail_items_df["clean_item"] = retail_items_df["Item"].apply(extract_item_name)
+                retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
+
+                # 选择商品项 - 使用三列布局控制长度
+                col_retail_items1, col_retail_items2, col_retail_items3 = st.columns([1, 1, 1])
+                with col_retail_items1:
+                    selected_retail_items = persisting_multiselect(
+                        "Select Items from Retail Categories",
+                        options=retail_item_options,
+                        key="retail_items_select"
+                    )
+
+                # 显示选中的商品项数据
+                if selected_retail_items:
+                    retail_item_summary = calculate_item_sales(
+                        items_df, selected_retail_categories, selected_retail_items, start_date, end_date
+                    )
+
+                    if not retail_item_summary.empty:
+                        st.dataframe(retail_item_summary, use_container_width=True)
+
+                        # 显示小计
+                        total_qty = retail_item_summary["Sum of Items Sold"].sum()
+                        total_sales = retail_item_summary["Sum of Daily Sales"].sum()
+                        st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
+            else:
+                st.info("No items found for selected Retail categories.")
     else:
         st.info("No data for Retail categories.")
 
     # ---------------- Comment (Retail Top Categories) ----------------
     st.markdown("### 💬 Comment")
-    if not df_filtered[df_filtered["Category"].isin(retail_cats)].empty:
-        retail_cats_summary = (df_filtered[df_filtered["Category"].isin(retail_cats)]
-                               .groupby("Category")["net_sales_with_tax"]
+    if not df_filtered_fixed[df_filtered_fixed["Category"].isin(retail_cats)].empty:
+        retail_cats_summary = (df_filtered_fixed[df_filtered_fixed["Category"].isin(retail_cats)]
+                               .groupby("Category")["final_sales"]  # 使用修复后的销售额
                                .sum()
                                .reset_index()
-                               .sort_values("net_sales_with_tax", ascending=False)
+                               .sort_values("final_sales", ascending=False)
                                .head(9))
-
-        # 对销售额进行四舍五入
-        retail_cats_summary["net_sales_with_tax"] = retail_cats_summary["net_sales_with_tax"].apply(
-            lambda x: proper_round(x) if pd.notna(x) else x
-        )
 
         lines = []
         for i in range(0, len(retail_cats_summary), 3):
             chunk = retail_cats_summary.iloc[i:i + 3]
-            line = " ".join([f"${int(v)} {n}" for n, v in zip(chunk["Category"], chunk["net_sales_with_tax"])])
+            line = " ".join([f"${int(v)} {n}" for n, v in zip(chunk["Category"], chunk["final_sales"])])
             lines.append(line)
         st.text("\n".join(lines))
 
