@@ -119,20 +119,21 @@ def preload_all_data():
     if not daily.empty:
         daily["date"] = pd.to_datetime(daily["date"])
         daily = daily.sort_values("date")
-        # 计算滚动平均值
-        daily["3M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=90, min_periods=1).mean()
-        daily["6M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=180, min_periods=1).mean()
+
+        # 移除缺失数据的日期 (8.18, 8.19, 8.20) - 所有数据都过滤
+        missing_dates = ['2025-08-18', '2025-08-19', '2025-08-20']
+        daily = daily[~daily["date"].isin(pd.to_datetime(missing_dates))]
+
+        # 计算滚动平均值 - 使用更准确的窗口计算
+        daily["3M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=90, min_periods=1, center=False).mean()
+        daily["6M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=180, min_periods=1, center=False).mean()
 
     if not category.empty:
         category["date"] = pd.to_datetime(category["date"])
         category = category.sort_values(["Category", "date"])
-        # 为分类数据也计算滚动平均
-        category["3M_Avg_Rolling"] = category.groupby("Category")["net_sales_with_tax"].transform(
-            lambda x: x.rolling(window=90, min_periods=1).mean()
-        )
-        category["6M_Avg_Rolling"] = category.groupby("Category")["net_sales_with_tax"].transform(
-            lambda x: x.rolling(window=180, min_periods=1).mean()
-        )
+
+        # 移除缺失数据的日期 - 所有分类都过滤
+        category = category[~category["date"].isin(pd.to_datetime(missing_dates))]
 
     return daily, category
 
@@ -261,20 +262,31 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
     # 定义bar分类
     bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
 
-    # 处理bar分类
+    # 处理bar分类 - 重新计算bar的滚动平均
     if "bar" in cats_sel:
         bar_tx = grouped_tx[grouped_tx["Category"].isin(bar_cats)].copy()
         if not bar_tx.empty:
-            bar_tx_aggregated = bar_tx.groupby("date").agg({
+            # 先按日期聚合bar数据
+            bar_daily_agg = bar_tx.groupby("date").agg({
                 "net_sales_with_tax": "sum",
                 "transactions": "sum",
-                "avg_txn": "mean",
-                "qty": "sum",
-                "3M_Avg_Rolling": "mean",
-                "6M_Avg_Rolling": "mean"
+                "qty": "sum"
             }).reset_index()
-            bar_tx_aggregated["Category"] = "bar"
-            parts_tx.append(bar_tx_aggregated)
+
+            # 计算bar的平均交易额
+            bar_daily_agg["avg_txn"] = bar_daily_agg.apply(
+                lambda x: x["net_sales_with_tax"] / x["transactions"] if x["transactions"] > 0 else 0,
+                axis=1
+            )
+
+            # 为bar数据计算准确的滚动平均
+            bar_daily_agg["3M_Avg_Rolling"] = bar_daily_agg["net_sales_with_tax"].rolling(window=90, min_periods=1,
+                                                                                          center=False).mean()
+            bar_daily_agg["6M_Avg_Rolling"] = bar_daily_agg["net_sales_with_tax"].rolling(window=180, min_periods=1,
+                                                                                          center=False).mean()
+
+            bar_daily_agg["Category"] = "bar"
+            parts_tx.append(bar_daily_agg)
 
     # 处理retail分类 = total - bar
     if "retail" in cats_sel:
@@ -284,27 +296,19 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
             "net_sales_with_tax": "total_net_sales",
             "transactions": "total_transactions",
             "avg_txn": "total_avg_txn",
-            "qty": "total_qty",
-            "3M_Avg_Rolling": "total_3m_avg",
-            "6M_Avg_Rolling": "total_6m_avg"
+            "qty": "total_qty"
         })
 
         # 获取每日bar数据
         bar_daily = grouped_tx[grouped_tx["Category"].isin(bar_cats)].groupby("date").agg({
             "net_sales_with_tax": "sum",
             "transactions": "sum",
-            "avg_txn": "mean",
-            "qty": "sum",
-            "3M_Avg_Rolling": "mean",
-            "6M_Avg_Rolling": "mean"
+            "qty": "sum"
         }).reset_index()
         bar_daily = bar_daily.rename(columns={
             "net_sales_with_tax": "bar_net_sales",
             "transactions": "bar_transactions",
-            "avg_txn": "bar_avg_txn",
-            "qty": "bar_qty",
-            "3M_Avg_Rolling": "bar_3m_avg",
-            "6M_Avg_Rolling": "bar_6m_avg"
+            "qty": "bar_qty"
         })
 
         # 合并total和bar数据
@@ -321,9 +325,11 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
             axis=1
         )
 
-        # 计算滚动平均
-        retail_data["3M_Avg_Rolling"] = retail_data["total_3m_avg"] - retail_data["bar_3m_avg"].fillna(0)
-        retail_data["6M_Avg_Rolling"] = retail_data["total_6m_avg"] - retail_data["bar_6m_avg"].fillna(0)
+        # 为retail数据计算准确的滚动平均
+        retail_data["3M_Avg_Rolling"] = retail_data["net_sales_with_tax"].rolling(window=90, min_periods=1,
+                                                                                  center=False).mean()
+        retail_data["6M_Avg_Rolling"] = retail_data["net_sales_with_tax"].rolling(window=180, min_periods=1,
+                                                                                  center=False).mean()
 
         # 只保留需要的列
         retail_tx = retail_data[
@@ -425,6 +431,11 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
     if melted_dfs:
         combined_df = pd.concat(melted_dfs, ignore_index=True)
         combined_df["series"] = combined_df["Category"] + " - " + combined_df["data_type"]
+
+        # 确保最终数据中完全移除缺失日期的数据点
+        missing_dates = ['2025-08-18', '2025-08-19', '2025-08-20']
+        combined_df = combined_df[~combined_df["date"].isin(pd.to_datetime(missing_dates))]
+
         return combined_df
 
     return None
@@ -447,13 +458,18 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     col_date, _ = st.columns([1, 2])
     with col_date:
         available_dates = sorted(daily["date"].dt.date.unique(), reverse=True)
-        selected_date = st.selectbox("Choose a specific date to view data", available_dates)
+        # 将日期格式改为欧洲格式显示
+        available_dates_formatted = [date.strftime('%d/%m/%Y') for date in available_dates]
+        selected_date_formatted = st.selectbox("Choose a specific date to view data", available_dates_formatted)
+
+        # 将选择的日期转换回日期对象
+        selected_date = pd.to_datetime(selected_date_formatted, format='%d/%m/%Y').date()
 
     # 转换 selected_date 为 Timestamp 用于比较
     selected_date_ts = pd.Timestamp(selected_date)
 
     # 筛选选定日期的数据
-    df_selected_date = daily[daily["date"] == selected_date_ts]
+    df_selected_date = daily[daily["date"].dt.date == selected_date]
 
     # === 计算客户数量 ===
     def calculate_customer_count(tx_df, selected_date):
@@ -505,14 +521,16 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         inv_value_latest = float(pd.to_numeric(sub["Inventory Value"], errors="coerce").sum())
         profit_latest = float(pd.to_numeric(sub["Profit"], errors="coerce").sum())
 
-    st.markdown(f"### 📅 Selected Date: {selected_date}")
+    st.markdown(f"### 📅 Selected Date: {selected_date.strftime('%d/%m/%Y')}")  # 改为欧洲日期格式
     labels_values = list(kpis_main.items()) + [
         ("Inventory Value", inv_value_latest),
         ("Profit (Amount)", profit_latest),
     ]
     captions = {
-        "Inventory Value": f"as of {pd.to_datetime(inv_latest_date).strftime('%Y-%m-%d') if inv_latest_date else '-'}",
-        "Profit (Amount)": f"as of {pd.to_datetime(inv_latest_date).strftime('%Y-%m-%d') if inv_latest_date else '-'}",
+        "Inventory Value": f"as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}",
+        # 改为欧洲日期格式
+        "Profit (Amount)": f"as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}",
+        # 改为欧洲日期格式
     }
 
     for row in range(0, len(labels_values), 4):
@@ -619,8 +637,9 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 labels={"date": "Date", "value": "Value", "series": "Series"}
             )
 
+            # 改为欧洲日期格式
             fig.update_layout(
-                xaxis=dict(tickformat="%Y-%m-%d"),
+                xaxis=dict(tickformat="%d/%m/%Y"),
                 hovermode="x unified",
                 height=600
             )
@@ -630,7 +649,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             # 显示数据表格
             with st.expander("View combined data for all selected types"):
                 display_df = combined_df.copy()
-                display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
+                display_df["date"] = display_df["date"].dt.strftime("%d/%m/%Y")  # 改为欧洲日期格式
 
                 # 对表格中的 Daily Net Sales 也进行四舍五入取整
                 display_df.loc[display_df["data_type"] == "Daily Net Sales", "value"] = display_df.loc[

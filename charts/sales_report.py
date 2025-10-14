@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import math
+from services.db import get_db
 
 
 def proper_round(x):
@@ -33,15 +34,116 @@ def _safe_sum(df, col):
     return float(pd.to_numeric(s, errors="coerce").sum(skipna=True) or 0.0)
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def preload_all_data():
+    """预加载所有需要的数据 - 与high_level.py相同的函数"""
+    db = get_db()
+
+    # 加载交易数据
+    daily_sql = """
+    WITH transaction_totals AS (
+        SELECT 
+            date(Datetime) AS date,
+            [Transaction ID] AS txn_id,
+            SUM([Gross Sales]) AS total_gross_sales,
+            SUM(COALESCE(CAST(REPLACE(REPLACE([Tax], '$', ''), ',', '') AS REAL), 0)) AS total_tax,
+            SUM(Qty) AS total_qty
+        FROM transactions
+        GROUP BY date, [Transaction ID]
+    )
+    SELECT
+        date,
+        SUM(ROUND(total_gross_sales - total_tax, 2)) AS net_sales_with_tax,
+        SUM(total_gross_sales) AS gross_sales,
+        SUM(total_tax) AS total_tax,
+        COUNT(DISTINCT txn_id) AS transactions,
+        CASE 
+            WHEN COUNT(DISTINCT txn_id) > 0 
+            THEN SUM(ROUND(total_gross_sales - total_tax, 2)) * 1.0 / COUNT(DISTINCT txn_id)
+            ELSE 0 
+        END AS avg_txn,
+        SUM(total_qty) AS qty
+    FROM transaction_totals
+    GROUP BY date
+    ORDER BY date;
+    """
+
+    category_sql = """
+    WITH category_transactions AS (
+        SELECT 
+            date(Datetime) AS date,
+            Category,
+            [Transaction ID] AS txn_id,
+            SUM([Net Sales]) AS cat_net_sales,
+            SUM(COALESCE(CAST(REPLACE(REPLACE([Tax], '$', ''), ',', '') AS REAL), 0)) AS cat_tax,
+            SUM([Gross Sales]) AS cat_gross,
+            SUM(Qty) AS cat_qty
+        FROM transactions
+        GROUP BY date, Category, [Transaction ID]
+    ),
+    category_daily AS (
+        SELECT
+            date,
+            Category,
+            txn_id,
+            SUM(ROUND(cat_net_sales + cat_tax, 2)) AS cat_total_with_tax,
+            SUM(cat_net_sales) AS cat_net_sales,
+            SUM(cat_tax) AS cat_tax,
+            SUM(cat_gross) AS cat_gross,
+            SUM(cat_qty) AS cat_qty
+        FROM category_transactions
+        GROUP BY date, Category, txn_id
+    )
+    SELECT
+        date,
+        Category,
+        SUM(cat_total_with_tax) AS net_sales_with_tax,
+        SUM(cat_net_sales) AS net_sales,
+        SUM(cat_tax) AS total_tax,
+        COUNT(DISTINCT txn_id) AS transactions,
+        CASE 
+            WHEN COUNT(DISTINCT txn_id) > 0 
+            THEN SUM(cat_total_with_tax) * 1.0 / COUNT(DISTINCT txn_id)
+            ELSE 0 
+        END AS avg_txn,
+        SUM(cat_gross) AS gross,
+        SUM(cat_qty) AS qty
+    FROM category_daily
+    GROUP BY date, Category
+    ORDER BY date, Category;
+    """
+
+    daily = pd.read_sql(daily_sql, db)
+    category = pd.read_sql(category_sql, db)
+
+    if not daily.empty:
+        daily["date"] = pd.to_datetime(daily["date"])
+        daily = daily.sort_values("date")
+
+        # 移除缺失数据的日期 (8.18, 8.19, 8.20) - 所有数据都过滤
+        missing_dates = ['2025-08-18', '2025-08-19', '2025-08-20']
+        daily = daily[~daily["date"].isin(pd.to_datetime(missing_dates))]
+
+    if not category.empty:
+        category["date"] = pd.to_datetime(category["date"])
+        category = category.sort_values(["Category", "date"])
+
+        # 移除缺失数据的日期 - 所有分类都过滤
+        category = category[~category["date"].isin(pd.to_datetime(missing_dates))]
+
+    return daily, category
+
+
 def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     st.header("🧾 Sales Report by Category")
 
-    if tx is None or tx.empty:
-        st.info("No transaction data available.")
-        return
+    # 预加载所有数据 - 使用与high_level.py相同的数据源
+    with st.spinner("Loading data..."):
+        daily, category_tx = preload_all_data()
 
-    # 🔹 确保 Datetime 是时间类型
-    tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
+    if category_tx.empty:
+        st.info("No category data available.")
+        return
 
     # ---------------- Time Range Filter ----------------
     st.subheader("📅 Time Range")
@@ -79,36 +181,18 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     elif range_opt == "YTD":
         start_date = today.replace(month=1, day=1)
 
-    # 应用时间范围筛选
-    df_filtered = tx.copy()
+    # 应用时间范围筛选到category数据
+    df_filtered = category_tx.copy()
     if start_date is not None and end_date is not None:
-        mask = (df_filtered["Datetime"] >= pd.to_datetime(start_date)) & (
-                df_filtered["Datetime"] <= pd.Timestamp(end_date))
+        mask = (df_filtered["date"] >= pd.to_datetime(start_date)) & (
+                df_filtered["date"] <= pd.Timestamp(end_date))
         df_filtered = df_filtered.loc[mask]
 
-    # ---------------- 使用与 high_level.py 一致的计算逻辑 ----------------
-    df = df_filtered.copy()
-
-    # 处理Tax列：移除$符号和逗号，转换为数字
-    df["Tax"] = pd.to_numeric(
-        df["Tax"].astype(str).str.replace(r'[^\d.-]', '', regex=True),
-        errors="coerce"
-    ).fillna(0)
-
-    # 处理Gross Sales列
-    df["Gross Sales"] = pd.to_numeric(df.get("Gross Sales"), errors="coerce").fillna(0.0)
-    df["Qty"] = pd.to_numeric(df.get("Qty"), errors="coerce").fillna(0).abs()
-
-    # 使用与 high_level.py 一致的计算逻辑：Daily Sales = Gross Sales - Tax
-    df["Daily Sales"] = df["Gross Sales"] - df["Tax"]
-    # 应用四舍五入到每行数据
-    df["Daily Sales"] = df["Daily Sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-
     # ---------------- Bar Charts ----------------
-    # 使用新的Daily Sales进行计算
-    g = df.groupby("Category", as_index=False).agg(
-        items_sold=("Qty", "sum"),
-        daily_sales=("Daily Sales", "sum")
+    # 使用high_level.py处理好的数据
+    g = df_filtered.groupby("Category", as_index=False).agg(
+        items_sold=("qty", "sum"),
+        daily_sales=("net_sales_with_tax", "sum")
     ).sort_values("items_sold", ascending=False)
 
     if not g.empty:
@@ -120,7 +204,8 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             st.plotly_chart(px.bar(g_chart, x="Category", y="items_sold", title="Items Sold (by Category)"),
                             use_container_width=True)
         with c2:
-            # daily_sales 已经在行级别进行了四舍五入，这里只需要确保汇总正确
+            # daily_sales 使用high_level.py已经计算好的net_sales_with_tax
+            g_chart["daily_sales"] = g_chart["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
             st.plotly_chart(px.bar(g_chart, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
                             use_container_width=True)
     else:
@@ -128,19 +213,19 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         return
 
     # ---------------- Group definitions ----------------
-    bar_cats = ["Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"]
-    retail_cats = [c for c in df["Category"].unique() if c not in bar_cats]
+    bar_cats = ["Cafe Drinks", "Smoothie Bar", "Smoothies", "Soups", "Sweet Treats", "Wraps & Salads"]
+    retail_cats = [c for c in df_filtered["Category"].unique() if c not in bar_cats]
 
-    # helper: 根据时间范围计算汇总数据 - 使用与 high_level.py 一致的逻辑
+    # helper: 根据时间范围计算汇总数据 - 使用high_level.py处理好的数据
     def time_range_summary(data, cats, range_type, start_dt, end_dt):
         sub = data[data["Category"].isin(cats)].copy()
         if sub.empty:
             return pd.DataFrame()
 
-        # 对于所有范围，直接汇总整个时间段的数据
+        # 使用high_level.py处理好的数据直接聚合
         summary = sub.groupby("Category", as_index=False).agg(
-            items_sold=("Qty", "sum"),
-            daily_sales=("Daily Sales", "sum")
+            items_sold=("qty", "sum"),
+            daily_sales=("net_sales_with_tax", "sum")
         )
 
         # 计算与前一个相同长度时间段的对比
@@ -149,23 +234,13 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             prev_start = start_dt - time_diff
             prev_end = start_dt - timedelta(days=1)
 
-            # 获取前一个时间段的数据
-            prev_mask = (tx["Datetime"] >= prev_start) & (tx["Datetime"] <= prev_end)
-            prev_data = tx.loc[prev_mask].copy()
+            # 获取前一个时间段的数据 - 使用相同的high_level.py数据源
+            prev_mask = (category_tx["date"] >= prev_start) & (category_tx["date"] <= prev_end)
+            prev_data = category_tx.loc[prev_mask].copy()
 
-            # 处理前一个时间段的数据 - 使用相同的计算逻辑
             if not prev_data.empty:
-                prev_data["Tax"] = pd.to_numeric(
-                    prev_data["Tax"].astype(str).str.replace(r'[^\d.-]', '', regex=True),
-                    errors="coerce"
-                ).fillna(0)
-                prev_data["Gross Sales"] = pd.to_numeric(prev_data.get("Gross Sales"), errors="coerce").fillna(0.0)
-                prev_data["Daily Sales"] = prev_data["Gross Sales"] - prev_data["Tax"]
-                prev_data["Daily Sales"] = prev_data["Daily Sales"].apply(
-                    lambda x: proper_round(x) if pd.notna(x) else x)
-
                 prev_summary = prev_data[prev_data["Category"].isin(cats)].groupby("Category", as_index=False).agg(
-                    prior_daily_sales=("Daily Sales", "sum")
+                    prior_daily_sales=("net_sales_with_tax", "sum")
                 )
 
                 summary = summary.merge(prev_summary, on="Category", how="left")
@@ -216,7 +291,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Bar table ----------------
     st.subheader("📊 Bar Categories")
-    bar_df = time_range_summary(df, bar_cats, range_opt, start_date, end_date)
+    bar_df = time_range_summary(df_filtered, bar_cats, range_opt, start_date, end_date)
     if not bar_df.empty:
         bar_df = bar_df.rename(columns={
             "Category": "Row Labels",
@@ -233,6 +308,10 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             use_container_width=True
         )
 
+        # 调试信息：显示Smoothie Bar的总和
+        smoothie_bar_total = bar_df[bar_df["Row Labels"] == "Smoothie Bar"]["Sum of Daily Sales"].sum()
+        st.caption(f"Debug: Smoothie Bar total = ${proper_round(smoothie_bar_total)}")
+
     else:
         st.info("No data for Bar categories.")
 
@@ -242,10 +321,11 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     # 🔹 使用与 high_level.py 一致的布局和格式
     col_retail, _ = st.columns([1, 2])
     with col_retail:
-        all_retail_cats = sorted(df[df["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
+        all_retail_cats = sorted(
+            df_filtered[df_filtered["Category"].isin(retail_cats)]["Category"].dropna().unique().tolist())
         sel_retail_cats = persisting_multiselect("Select Retail Categories", all_retail_cats, key="sr_retail_cats")
 
-    retail_df = time_range_summary(df, retail_cats, range_opt, start_date, end_date)
+    retail_df = time_range_summary(df_filtered, retail_cats, range_opt, start_date, end_date)
     if not retail_df.empty:
         retail_df = retail_df.rename(columns={
             "Category": "Row Labels",
@@ -269,23 +349,23 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Comment (Retail Top Categories) ----------------
     st.markdown("### 💬 Comment")
-    if not df[df["Category"].isin(retail_cats)].empty:
-        retail_cats_summary = (df[df["Category"].isin(retail_cats)]
-                               .groupby("Category")["Daily Sales"]
+    if not df_filtered[df_filtered["Category"].isin(retail_cats)].empty:
+        retail_cats_summary = (df_filtered[df_filtered["Category"].isin(retail_cats)]
+                               .groupby("Category")["net_sales_with_tax"]
                                .sum()
                                .reset_index()
-                               .sort_values("Daily Sales", ascending=False)
+                               .sort_values("net_sales_with_tax", ascending=False)
                                .head(9))
 
         # 对销售额进行四舍五入
-        retail_cats_summary["Daily Sales"] = retail_cats_summary["Daily Sales"].apply(
+        retail_cats_summary["net_sales_with_tax"] = retail_cats_summary["net_sales_with_tax"].apply(
             lambda x: proper_round(x) if pd.notna(x) else x
         )
 
         lines = []
         for i in range(0, len(retail_cats_summary), 3):
             chunk = retail_cats_summary.iloc[i:i + 3]
-            line = " ".join([f"${int(v)} {n}" for n, v in zip(chunk["Category"], chunk["Daily Sales"])])
+            line = " ".join([f"${int(v)} {n}" for n, v in zip(chunk["Category"], chunk["net_sales_with_tax"])])
             lines.append(line)
         st.text("\n".join(lines))
 
