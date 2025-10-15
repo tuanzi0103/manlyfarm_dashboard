@@ -496,7 +496,7 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
 
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
-    st.header("📊 High Level Report")
+    st.header("📊 High Level report")  # 修改2：重命名Dashboard
 
     # 预加载所有数据
     with st.spinner("Loading data..."):
@@ -508,7 +508,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         return
 
     # === 特定日期选择 ===
-    st.subheader("📅 Select Specific Date")
+    # 修改3：移除大标题，只保留选择器
     col_date, _ = st.columns([1, 2])
     with col_date:
         available_dates = sorted(daily["date"].dt.date.unique(), reverse=True)
@@ -575,20 +575,22 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         inv_value_latest = float(pd.to_numeric(sub["Inventory Value"], errors="coerce").sum())
         profit_latest = float(pd.to_numeric(sub["Profit"], errors="coerce").sum())
 
-    st.markdown(f"### 📅 Selected Date: {selected_date.strftime('%d/%m/%Y')}")  # 改为欧洲日期格式
+    # 修改1：缩小字体大小，改为一行展示
+    st.markdown(f"### Selected Date: {selected_date.strftime('%d/%m/%Y')}")  # 改为欧洲日期格式
+
     labels_values = list(kpis_main.items()) + [
         ("Inventory Value", inv_value_latest),
-        ("Profit (Amount)", profit_latest),
+        # 修改4：移除Profit (Amount)的展示但保留计算逻辑
     ]
     captions = {
         "Inventory Value": f"as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}",
-        # 改为欧洲日期格式
-        "Profit (Amount)": f"as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}",
-        # 改为欧洲日期格式
+        # 修改4：移除Profit (Amount)的caption
     }
 
-    for row in range(0, len(labels_values), 4):
-        cols = st.columns(4)
+    # 修改1：调整布局，确保在一行内展示
+    # 修改KPI显示部分，改为每行8个
+    for row in range(0, len(labels_values), 8):  # 改为每行8个
+        cols = st.columns(8)  # 改为8列
         for i, col in enumerate(cols):
             idx = row + i
             if idx < len(labels_values):
@@ -598,15 +600,16 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 else:
                     if label == "Avg Transaction":
                         display = f"${val:,.2f}"
-                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg", "Inventory Value", "Profit (Amount)"]:
+                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg", "Inventory Value"]:
                         display = f"${proper_round(val):,}"
                     else:
                         display = f"{proper_round(val):,}"
                 with col:
-                    st.markdown(f"<div style='font-size:28px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
-                    st.caption(label)
+                    # 进一步缩小字体确保一行显示
+                    st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
                     if label in captions:
-                        st.caption(captions[label])
+                        st.markdown(f"<div style='font-size:10px;'>{captions[label]}</div>", unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -622,9 +625,10 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # === 第二列：数据类型 ===
     with col2:
+        # 修改4：从选项中移除Profit (Amount)
         data_options = [
             "Daily Net Sales", "Daily Transactions", "Avg Transaction", "3M Avg", "6M Avg",
-            "Inventory Value", "Profit (Amount)", "Items Sold"
+            "Inventory Value", "Items Sold"
         ]
         data_sel = persisting_multiselect("Choose data type", data_options, key="hl_data")
 

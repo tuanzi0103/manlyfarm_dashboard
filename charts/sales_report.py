@@ -1,5 +1,6 @@
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -15,8 +16,13 @@ def proper_round(x):
 
 
 def persisting_multiselect(label, options, key, default=None):
+    """持久化多选框，处理默认值不在选项中的情况"""
     if key not in st.session_state:
         st.session_state[key] = default or []
+
+    # 过滤掉不在当前选项中的默认值
+    st.session_state[key] = [item for item in st.session_state[key] if item in options]
+
     return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 
@@ -251,6 +257,71 @@ def calculate_item_sales(items_df, selected_categories, selected_items, start_da
     })[["Category", "Item", "Sum of Items Sold", "Sum of Daily Sales"]]
 
 
+def calculate_item_daily_trends(items_df, selected_categories, selected_items, start_date=None, end_date=None):
+    """计算指定category和items的每日趋势数据"""
+    if not selected_categories or not selected_items:
+        return pd.DataFrame()
+
+    # 复制数据避免修改原数据
+    filtered_items = items_df.copy()
+
+    # 应用日期筛选
+    if start_date is not None and end_date is not None:
+        mask = (filtered_items["date"] >= pd.to_datetime(start_date)) & (
+                filtered_items["date"] <= pd.Timestamp(end_date))
+        filtered_items = filtered_items.loc[mask]
+
+    # 过滤指定category的商品
+    filtered_items = filtered_items[filtered_items["Category"].isin(selected_categories)]
+
+    # 清理商品名称用于匹配
+    filtered_items["clean_item"] = filtered_items["Item"].apply(extract_item_name)
+
+    # 应用商品项筛选
+    filtered_items = filtered_items[filtered_items["clean_item"].isin(selected_items)]
+
+    if filtered_items.empty:
+        return pd.DataFrame()
+
+    # 定义bar分类
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+    # 计算每个商品项的销售数据
+    def calculate_sales(row):
+        if row["Category"] in bar_cats:
+            # Bar分类：使用Net Sales + Tax
+            tax_value = 0
+            if pd.notna(row["Tax"]):
+                try:
+                    tax_str = str(row["Tax"]).replace('$', '').replace(',', '')
+                    tax_value = float(tax_str) if tax_str else 0
+                except:
+                    tax_value = 0
+            return proper_round(row["Net Sales"] + tax_value)
+        else:
+            # 非Bar分类：直接使用Net Sales
+            return proper_round(row["Net Sales"])
+
+    filtered_items["final_sales"] = filtered_items.apply(calculate_sales, axis=1)
+
+    # 按日期和商品项汇总
+    daily_trends = filtered_items.groupby(["date", "Category", "clean_item"]).agg({
+        "Qty": "sum",
+        "final_sales": "sum"
+    }).reset_index()
+
+    # 按日期汇总所有选中商品的总和
+    daily_summary = daily_trends.groupby("date").agg({
+        "Qty": "sum",
+        "final_sales": "sum"
+    }).reset_index()
+
+    return daily_summary.rename(columns={
+        "Qty": "Sum of Items Sold",
+        "final_sales": "Sum of Daily Sales"
+    })[["date", "Sum of Items Sold", "Sum of Daily Sales"]]
+
+
 def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     st.header("🧾 Sales Report by Category")
 
@@ -325,7 +396,9 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             st.plotly_chart(px.bar(g, x="Category", y="items_sold", title="Items Sold (by Category)"),
                             use_container_width=True)
         with c2:
-            st.plotly_chart(px.bar(g, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
+            # 按销售额从高到低排序
+            g_sorted = g.sort_values("daily_sales", ascending=False)
+            st.plotly_chart(px.bar(g_sorted, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
                             use_container_width=True)
     else:
         st.info("No data under current filters.")
@@ -475,6 +548,69 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                         total_sales = bar_item_summary["Sum of Daily Sales"].sum()
                         st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
 
+                        # 显示每日趋势折线图
+                        st.subheader("📈 Daily Trends for Selected Bar Items")
+                        bar_daily_trends = calculate_item_daily_trends(
+                            items_df, selected_bar_categories, selected_bar_items, start_date, end_date
+                        )
+
+                        if not bar_daily_trends.empty:
+                            # 创建折线图
+                            fig = go.Figure()
+
+                            # 添加Sum of Items Sold线
+                            fig.add_trace(go.Scatter(
+                                x=bar_daily_trends["date"],
+                                y=bar_daily_trends["Sum of Items Sold"],
+                                mode='lines+markers',
+                                name='Sum of Items Sold',
+                                line=dict(color='blue', width=2),
+                                marker=dict(size=6)
+                            ))
+
+                            # 添加Sum of Daily Sales线（使用次y轴）
+                            fig.add_trace(go.Scatter(
+                                x=bar_daily_trends["date"],
+                                y=bar_daily_trends["Sum of Daily Sales"],
+                                mode='lines+markers',
+                                name='Sum of Daily Sales ($)',
+                                line=dict(color='red', width=2),
+                                marker=dict(size=6),
+                                yaxis='y2'
+                            ))
+
+                            # 更新布局，设置日期格式和双y轴
+                            fig.update_layout(
+                                title="Daily Trends for Selected Bar Items",
+                                xaxis=dict(
+                                    title="Date",
+                                    tickformat="%d/%m/%Y"  # 设置日期格式为day/month/year
+                                ),
+                                yaxis=dict(
+                                    title="Sum of Items Sold",
+                                    titlefont=dict(color="blue"),
+                                    tickfont=dict(color="blue")
+                                ),
+                                yaxis2=dict(
+                                    title="Sum of Daily Sales ($)",
+                                    titlefont=dict(color="red"),
+                                    tickfont=dict(color="red"),
+                                    overlaying="y",
+                                    side="right"
+                                ),
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="bottom",
+                                    y=1.02,
+                                    xanchor="right",
+                                    x=1
+                                )
+                            )
+
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No daily trend data available for selected Bar items.")
+
                         # 调试信息：显示数据条数
                         filtered_debug = items_df[
                             (items_df["Category"].isin(selected_bar_categories)) &
@@ -555,6 +691,69 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                         total_qty = retail_item_summary["Sum of Items Sold"].sum()
                         total_sales = retail_item_summary["Sum of Daily Sales"].sum()
                         st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
+
+                        # 显示每日趋势折线图
+                        st.subheader("📈 Daily Trends for Selected Retail Items")
+                        retail_daily_trends = calculate_item_daily_trends(
+                            items_df, selected_retail_categories, selected_retail_items, start_date, end_date
+                        )
+
+                        if not retail_daily_trends.empty:
+                            # 创建折线图
+                            fig = go.Figure()
+
+                            # 添加Sum of Items Sold线
+                            fig.add_trace(go.Scatter(
+                                x=retail_daily_trends["date"],
+                                y=retail_daily_trends["Sum of Items Sold"],
+                                mode='lines+markers',
+                                name='Sum of Items Sold',
+                                line=dict(color='blue', width=2),
+                                marker=dict(size=6)
+                            ))
+
+                            # 添加Sum of Daily Sales线（使用次y轴）
+                            fig.add_trace(go.Scatter(
+                                x=retail_daily_trends["date"],
+                                y=retail_daily_trends["Sum of Daily Sales"],
+                                mode='lines+markers',
+                                name='Sum of Daily Sales ($)',
+                                line=dict(color='red', width=2),
+                                marker=dict(size=6),
+                                yaxis='y2'
+                            ))
+
+                            # 更新布局，设置日期格式和双y轴
+                            fig.update_layout(
+                                title="Daily Trends for Selected Retail Items",
+                                xaxis=dict(
+                                    title="Date",
+                                    tickformat="%d/%m/%Y"  # 设置日期格式为day/month/year
+                                ),
+                                yaxis=dict(
+                                    title="Sum of Items Sold",
+                                    titlefont=dict(color="blue"),
+                                    tickfont=dict(color="blue")
+                                ),
+                                yaxis2=dict(
+                                    title="Sum of Daily Sales ($)",
+                                    titlefont=dict(color="red"),
+                                    tickfont=dict(color="red"),
+                                    overlaying="y",
+                                    side="right"
+                                ),
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="bottom",
+                                    y=1.02,
+                                    xanchor="right",
+                                    x=1
+                                )
+                            )
+
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No daily trend data available for selected Retail items.")
             else:
                 st.info("No items found for selected Retail categories.")
     else:
