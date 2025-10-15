@@ -24,7 +24,7 @@ init_db()  # 必须先初始化数据库表结构
 init_db_from_drive_once()
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
-st.title("📊 Manly Farm Dashboard")
+st.title("📊 Vie Manly Dashboard")
 
 
 # ✅ 缓存数据库加载
