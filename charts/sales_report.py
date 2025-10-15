@@ -587,13 +587,11 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                     tickformat="%d/%m/%Y"  # 设置日期格式为day/month/year
                                 ),
                                 yaxis=dict(
-                                    title="Sum of Items Sold",
-                                    titlefont=dict(color="blue"),
+                                    title=dict(text="Sum of Items Sold", font=dict(color="blue")),
                                     tickfont=dict(color="blue")
                                 ),
                                 yaxis2=dict(
-                                    title="Sum of Daily Sales ($)",
-                                    titlefont=dict(color="red"),
+                                    title=dict(text="Sum of Daily Sales ($)", font=dict(color="red")),
                                     tickfont=dict(color="red"),
                                     overlaying="y",
                                     side="right"
@@ -731,13 +729,11 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                     tickformat="%d/%m/%Y"  # 设置日期格式为day/month/year
                                 ),
                                 yaxis=dict(
-                                    title="Sum of Items Sold",
-                                    titlefont=dict(color="blue"),
+                                    title=dict(text="Sum of Items Sold", font=dict(color="blue")),
                                     tickfont=dict(color="blue")
                                 ),
                                 yaxis2=dict(
-                                    title="Sum of Daily Sales ($)",
-                                    titlefont=dict(color="red"),
+                                    title=dict(text="Sum of Daily Sales ($)", font=dict(color="red")),
                                     tickfont=dict(color="red"),
                                     overlaying="y",
                                     side="right"
