@@ -27,9 +27,41 @@ def proper_round(x):
     return math.floor(x + 0.5)
 
 
-def persisting_multiselect(label, options, key, default=None):
+def persisting_multiselect(label, options, key, default=None, width_chars=None):
     if key not in st.session_state:
         st.session_state[key] = default or []
+
+    # === 修改：添加自定义宽度参数 ===
+    if width_chars is None:
+        # 默认宽度为标签长度+1字符
+        label_width = len(label)
+        min_width = label_width + 1
+    else:
+        # 使用自定义宽度
+        min_width = width_chars
+
+    st.markdown(f"""
+    <style>
+        /* 强制设置多选框宽度 */
+        [data-testid*="{key}"] {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+        [data-testid*="{key}"] > div {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+        [data-testid*="{key}"] [data-baseweb="select"] {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+        [data-testid*="{key}"] [data-baseweb="select"] > div {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+    </style>
+    """, unsafe_allow_html=True)
+
     return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 
@@ -398,17 +430,50 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
 
     df_plot = pd.concat(parts_tx, ignore_index=True)
 
-    # 数据映射
+    # 数据映射 - 修改2：为每个数据类型都添加3M和6M Avg的映射
     data_map_extended = {
         "Daily Net Sales": "net_sales_with_tax",
         "Daily Transactions": "transactions",
         "Avg Transaction": "avg_txn",
-        "3M Avg": "3M_Avg_Rolling",
-        "6M Avg": "6M_Avg_Rolling",
         "Items Sold": "qty",
         "Inventory Value": "inventory_value",
-        "Profit (Amount)": "profit_amount"
+        "Profit (Amount)": "profit_amount",
+        # 为每个数据类型添加对应的3M和6M Avg
+        "Daily Net Sales 3M Avg": "3M_Avg_Rolling",
+        "Daily Net Sales 6M Avg": "6M_Avg_Rolling",
+        "Daily Transactions 3M Avg": "transactions_3M_Avg",
+        "Daily Transactions 6M Avg": "transactions_6M_Avg",
+        "Avg Transaction 3M Avg": "avg_txn_3M_Avg",
+        "Avg Transaction 6M Avg": "avg_txn_6M_Avg",
+        "Items Sold 3M Avg": "qty_3M_Avg",
+        "Items Sold 6M Avg": "qty_6M_Avg",
     }
+
+    # 为其他数据类型计算3M和6M滚动平均值
+    if any("3M Avg" in data_type or "6M Avg" in data_type for data_type in data_sel):
+        # 为transactions计算滚动平均
+        df_plot["transactions_3M_Avg"] = df_plot.groupby("Category")["transactions"].transform(
+            lambda x: x.rolling(window=90, min_periods=1, center=False).mean()
+        )
+        df_plot["transactions_6M_Avg"] = df_plot.groupby("Category")["transactions"].transform(
+            lambda x: x.rolling(window=180, min_periods=1, center=False).mean()
+        )
+
+        # 为avg_txn计算滚动平均
+        df_plot["avg_txn_3M_Avg"] = df_plot.groupby("Category")["avg_txn"].transform(
+            lambda x: x.rolling(window=90, min_periods=1, center=False).mean()
+        )
+        df_plot["avg_txn_6M_Avg"] = df_plot.groupby("Category")["avg_txn"].transform(
+            lambda x: x.rolling(window=180, min_periods=1, center=False).mean()
+        )
+
+        # 为qty计算滚动平均
+        df_plot["qty_3M_Avg"] = df_plot.groupby("Category")["qty"].transform(
+            lambda x: x.rolling(window=90, min_periods=1, center=False).mean()
+        )
+        df_plot["qty_6M_Avg"] = df_plot.groupby("Category")["qty"].transform(
+            lambda x: x.rolling(window=180, min_periods=1, center=False).mean()
+        )
 
     # 处理库存数据
     if any(data in ["Inventory Value", "Profit (Amount)"] for data in data_sel):
@@ -496,7 +561,7 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
 
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
-    st.header("📊 High Level report")  # 修改2：重命名Dashboard
+    st.header("📊 High Level report")
 
     # 预加载所有数据
     with st.spinner("Loading data..."):
@@ -508,12 +573,50 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         return
 
     # === 特定日期选择 ===
-    # 修改3：移除大标题，只保留选择器
     col_date, _ = st.columns([1, 2])
     with col_date:
         available_dates = sorted(daily["date"].dt.date.unique(), reverse=True)
         # 将日期格式改为欧洲格式显示
         available_dates_formatted = [date.strftime('%d/%m/%Y') for date in available_dates]
+
+        # === 修改2：日期选择框宽度精确匹配日期长度 ===
+        # 计算最长日期的长度（欧洲格式 dd/mm/yyyy = 10字符）
+        date_width = 18  # dd/mm/yyyy 固定10字符
+        selectbox_width = date_width + 1  # 加1给下拉箭头
+
+        st.markdown(f"""
+        <style>
+            /* 日期选择框容器 - 精确宽度 */
+            div[data-testid*="stSelectbox"] {{
+                width: {selectbox_width}ch !important;
+                min-width: {selectbox_width}ch !important;
+                max-width: {selectbox_width}ch !important;
+                display: inline-block !important;
+            }}
+            /* 日期选择框标签 */
+            div[data-testid*="stSelectbox"] label {{
+                white-space: nowrap !important;
+                font-size: 0.9rem !important;
+                width: 100% !important;
+            }}
+            /* 下拉菜单 */
+            div[data-testid*="stSelectbox"] [data-baseweb="select"] {{
+                width: {selectbox_width}ch !important;
+                min-width: {selectbox_width}ch !important;
+                max-width: {selectbox_width}ch !important;
+            }}
+            /* 下拉选项容器 */
+            div[role="listbox"] {{
+                min-width: {selectbox_width}ch !important;
+                max-width: {selectbox_width}ch !important;
+            }}
+            /* 隐藏多余的下拉箭头空间 */
+            div[data-testid*="stSelectbox"] [data-baseweb="select"] > div {{
+                padding-right: 0 !important;
+            }}
+        </style>
+        """, unsafe_allow_html=True)
+
         selected_date_formatted = st.selectbox("Choose a specific date to view data", available_dates_formatted)
 
         # 将选择的日期转换回日期对象
@@ -556,6 +659,69 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
         return len(unique_customers)
 
+    # === 计算bar和retail的特定日期数据 ===
+    def calculate_bar_retail_data(category_tx, selected_date, daily_data):
+        """计算bar和retail在选定日期的数据"""
+        selected_date_ts = pd.Timestamp(selected_date)
+
+        # bar分类定义
+        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+        # 筛选选定日期的分类数据
+        daily_category_data = category_tx[category_tx["date"].dt.date == selected_date]
+
+        # 计算bar数据
+        bar_data = daily_category_data[daily_category_data["Category"].isin(bar_cats)]
+        bar_net_sales = proper_round(bar_data["net_sales_with_tax"].sum())
+        bar_transactions = bar_data["transactions"].sum()
+        bar_avg_txn = bar_net_sales / bar_transactions if bar_transactions > 0 else 0
+        bar_qty = bar_data["qty"].sum()
+
+        # 计算bar的3M和6M平均值（使用最近的滚动平均值）
+        bar_3m_avg = proper_round(bar_data["3M_Avg_Rolling"].iloc[-1]) if not bar_data.empty else 0
+        bar_6m_avg = proper_round(bar_data["6M_Avg_Rolling"].iloc[-1]) if not bar_data.empty else 0
+
+        # 计算retail数据 = total - bar
+        total_data = daily_data[daily_data["date"].dt.date == selected_date]
+        total_net_sales = proper_round(total_data["net_sales_with_tax"].sum())
+        total_transactions = total_data["transactions"].sum()
+        total_qty = total_data["qty"].sum()
+
+        retail_net_sales = total_net_sales - bar_net_sales
+        retail_transactions = total_transactions - bar_transactions
+        retail_avg_txn = retail_net_sales / retail_transactions if retail_transactions > 0 else 0
+        retail_qty = total_qty - bar_qty
+
+        # 计算retail的3M和6M平均值（使用最近的滚动平均值）
+        retail_3m_avg = proper_round(total_data["3M_Avg_Rolling"].iloc[-1]) - bar_3m_avg if not total_data.empty else 0
+        retail_6m_avg = proper_round(total_data["6M_Avg_Rolling"].iloc[-1]) - bar_6m_avg if not total_data.empty else 0
+
+        # 计算bar和retail的客户数量（这里简化处理，按交易比例分配）
+        total_customers = calculate_customer_count(tx, selected_date)
+        bar_customers = int(total_customers * (bar_transactions / total_transactions)) if total_transactions > 0 else 0
+        retail_customers = total_customers - bar_customers
+
+        return {
+            "bar": {
+                "Daily Net Sales": bar_net_sales,
+                "Daily Transactions": bar_transactions,
+                "Number of Customers": bar_customers,
+                "Avg Transaction": bar_avg_txn,
+                "3M Avg": bar_3m_avg,
+                "6M Avg": bar_6m_avg,
+                "Items Sold": bar_qty
+            },
+            "retail": {
+                "Daily Net Sales": retail_net_sales,
+                "Daily Transactions": retail_transactions,
+                "Number of Customers": retail_customers,
+                "Avg Transaction": retail_avg_txn,
+                "3M Avg": retail_3m_avg,
+                "6M Avg": retail_6m_avg,
+                "Items Sold": retail_qty
+            }
+        }
+
     # === KPI（交易，口径按小票） ===
     kpis_main = {
         "Daily Net Sales": proper_round(df_selected_date["net_sales_with_tax"].sum()),
@@ -575,22 +741,24 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         inv_value_latest = float(pd.to_numeric(sub["Inventory Value"], errors="coerce").sum())
         profit_latest = float(pd.to_numeric(sub["Profit"], errors="coerce").sum())
 
-    # 修改1：缩小字体大小，改为一行展示
-    st.markdown(f"### Selected Date: {selected_date.strftime('%d/%m/%Y')}")  # 改为欧洲日期格式
+    # 计算bar和retail数据
+    bar_retail_data = calculate_bar_retail_data(category_tx, selected_date, daily)
 
+    # 显示选定日期
+    st.markdown(f"### Selected Date: {selected_date.strftime('%d/%m/%Y')}")
+
+    # 第一行：总数据
     labels_values = list(kpis_main.items()) + [
         ("Inventory Value", inv_value_latest),
-        # 修改4：移除Profit (Amount)的展示但保留计算逻辑
     ]
     captions = {
         "Inventory Value": f"as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}",
-        # 修改4：移除Profit (Amount)的caption
     }
 
-    # 修改1：调整布局，确保在一行内展示
-    # 修改KPI显示部分，改为每行8个
-    for row in range(0, len(labels_values), 8):  # 改为每行8个
-        cols = st.columns(8)  # 改为8列
+    # 修改KPI显示部分
+    st.markdown("**Total Data**")
+    for row in range(0, len(labels_values), 8):
+        cols = st.columns(8)
         for i, col in enumerate(cols):
             idx = row + i
             if idx < len(labels_values):
@@ -605,62 +773,146 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                     else:
                         display = f"{proper_round(val):,}"
                 with col:
-                    # 进一步缩小字体确保一行显示
                     st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
                     if label in captions:
                         st.markdown(f"<div style='font-size:10px;'>{captions[label]}</div>", unsafe_allow_html=True)
+
+    # 第二行：Bar数据
+    st.markdown("**Bar Data**")
+    bar_labels_values = [
+        ("Daily Net Sales", bar_retail_data["bar"]["Daily Net Sales"]),
+        ("Daily Transactions", bar_retail_data["bar"]["Daily Transactions"]),
+        ("Number of Customers", bar_retail_data["bar"]["Number of Customers"]),
+        ("Avg Transaction", bar_retail_data["bar"]["Avg Transaction"]),
+        ("3M Avg", bar_retail_data["bar"]["3M Avg"]),
+        ("6M Avg", bar_retail_data["bar"]["6M Avg"]),
+        ("Items Sold", bar_retail_data["bar"]["Items Sold"])
+    ]
+
+    for row in range(0, len(bar_labels_values), 8):
+        cols = st.columns(8)
+        for i, col in enumerate(cols):
+            idx = row + i
+            if idx < len(bar_labels_values):
+                label, val = bar_labels_values[idx]
+                if pd.isna(val):
+                    display = "-"
+                else:
+                    if label == "Avg Transaction":
+                        display = f"${val:,.2f}"
+                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg"]:
+                        display = f"${proper_round(val):,}"
+                    else:
+                        display = f"{proper_round(val):,}"
+                with col:
+                    st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
+
+    # 第三行：Retail数据
+    st.markdown("**Retail Data**")
+    retail_labels_values = [
+        ("Daily Net Sales", bar_retail_data["retail"]["Daily Net Sales"]),
+        ("Daily Transactions", bar_retail_data["retail"]["Daily Transactions"]),
+        ("Number of Customers", bar_retail_data["retail"]["Number of Customers"]),
+        ("Avg Transaction", bar_retail_data["retail"]["Avg Transaction"]),
+        ("3M Avg", bar_retail_data["retail"]["3M Avg"]),
+        ("6M Avg", bar_retail_data["retail"]["6M Avg"]),
+        ("Items Sold", bar_retail_data["retail"]["Items Sold"])
+    ]
+
+    for row in range(0, len(retail_labels_values), 8):
+        cols = st.columns(8)
+        for i, col in enumerate(cols):
+            idx = row + i
+            if idx < len(retail_labels_values):
+                label, val = retail_labels_values[idx]
+                if pd.isna(val):
+                    display = "-"
+                else:
+                    if label == "Avg Transaction":
+                        display = f"${val:,.2f}"
+                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg"]:
+                        display = f"${proper_round(val):,}"
+                    else:
+                        display = f"{proper_round(val):,}"
+                with col:
+                    st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
 
     st.markdown("---")
 
     # === 交互选择 ===
     st.subheader("🔍 Select Parameters")
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # === 修改：单行紧凑布局 ===
+    st.markdown("""
+    <style>
+    /* 参数选择部分的容器 - 紧凑布局 */
+    div[data-testid="stVerticalBlock"] > div {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 1rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    # === 第一列：时间范围 ===
-    with col1:
-        time_range_options = ["Custom dates", "WTD", "MTD", "YTD"]
-        time_range = st.multiselect("Choose time range", time_range_options, key="hl_time")
+    # 使用单行紧凑布局 - 四个多选框依次排列
+    time_range = persisting_multiselect("Choose time range", ["Custom dates", "WTD", "MTD", "YTD"], key="hl_time", width_chars=16)
 
-    # === 第二列：数据类型 ===
-    with col2:
-        # 修改4：从选项中移除Profit (Amount)
-        data_options = [
-            "Daily Net Sales", "Daily Transactions", "Avg Transaction", "3M Avg", "6M Avg",
-            "Inventory Value", "Items Sold"
-        ]
-        data_sel = persisting_multiselect("Choose data type", data_options, key="hl_data")
+    # 数据类型部分 - 在同一行
+    base_data_options = ["Daily Net Sales", "Daily Transactions", "Avg Transaction", "Items Sold", "Inventory Value"]
+    avg_data_options = ["3M Avg", "6M Avg"]
 
-    # === 第三列：分类 ===
-    with col3:
-        if category_tx is None or category_tx.empty:
-            st.info("No category breakdown available.")
-            return
+    # 显示基础数据类型
+    data_sel_base = persisting_multiselect("Choose data types", base_data_options, key="hl_data_base", width_chars=18)
 
-        # 过滤掉没有数据的分类 - 修复重复显示问题
-        category_tx["Category"] = category_tx["Category"].astype(str).str.strip()
-        all_cats_tx = (
-            category_tx["Category"]
-            .fillna("Unknown")
-            .drop_duplicates()  # ✅ 去重
-            .sort_values()
-            .tolist()
-        )
+    # 显示平均值选项
+    data_sel_avg = persisting_multiselect("Choose averages", avg_data_options, key="hl_data_avg", width_chars=15)
 
-        # 只保留有实际数据的分类
-        valid_cats = []
-        seen_cats = set()
-        for cat in all_cats_tx:
-            if cat not in seen_cats:
-                seen_cats.add(cat)
-                cat_data = category_tx[category_tx["Category"] == cat]
-                if not cat_data.empty and cat_data["net_sales_with_tax"].sum() > 0:
-                    valid_cats.append(cat)
+    # 分类选择
+    if category_tx is None or category_tx.empty:
+        st.info("No category breakdown available.")
+        return
 
-        special_cats = ["bar", "retail", "total"]
-        all_cats_extended = special_cats + sorted([c for c in valid_cats if c not in special_cats])
-        cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats")
+    # 过滤掉没有数据的分类 - 修复重复显示问题
+    category_tx["Category"] = category_tx["Category"].astype(str).str.strip()
+    all_cats_tx = (
+        category_tx["Category"]
+        .fillna("Unknown")
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+
+    # 只保留有实际数据的分类
+    valid_cats = []
+    seen_cats = set()
+    for cat in all_cats_tx:
+        if cat not in seen_cats:
+            seen_cats.add(cat)
+            cat_data = category_tx[category_tx["Category"] == cat]
+            if not cat_data.empty and cat_data["net_sales_with_tax"].sum() > 0:
+                valid_cats.append(cat)
+
+    special_cats = ["bar", "retail", "total"]
+    all_cats_extended = special_cats + sorted([c for c in valid_cats if c not in special_cats])
+    cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats", width_chars=16)
+
+    # 合并数据类型选择
+    data_sel = data_sel_base.copy()
+
+    # 如果选择了平均值，为每个选择的基础数据类型添加对应的平均值
+    for avg_type in data_sel_avg:
+        for base_type in data_sel_base:
+            if base_type in ["Daily Net Sales", "Daily Transactions", "Avg Transaction", "Items Sold"]:
+                combined_type = f"{base_type} {avg_type}"
+                data_sel.append(combined_type)
+
+    # 如果没有选择任何基础数据类型但有平均值，默认使用Daily Net Sales
+    if not data_sel_base and data_sel_avg:
+        for avg_type in data_sel_avg:
+            data_sel.append(f"Daily Net Sales {avg_type}")
 
     # === 自定义日期范围选择 ===
     custom_dates_selected = False
@@ -684,7 +936,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 key="date_to"
             )
 
-    # 检查是否有有效选择
+    # 修改1：检查三个多选框是否都有选择
     has_time_range = bool(time_range)
     has_data_sel = bool(data_sel)
     has_cats_sel = bool(cats_sel)
@@ -695,7 +947,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     else:
         has_valid_custom_dates = True
 
-    # 实时计算图表数据
+    # 实时计算图表数据 - 修改1：只有三个多选框都选择了才展示
     if has_time_range and has_data_sel and has_cats_sel and has_valid_custom_dates:
         with st.spinner("Generating chart..."):
             combined_df = prepare_chart_data_fast(
@@ -725,27 +977,100 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             )
 
             st.plotly_chart(fig, use_container_width=True)
+            st.markdown("""
+            <style>
+            div[data-testid="stExpander"] > div:first-child {
+                width: fit-content !important;
+                max-width: 95% !important;
+            }
+            div[data-testid="stDataFrame"] {
+                width: fit-content !important;
+            }
+            </style>
+            """, unsafe_allow_html=True)
 
-            # 显示数据表格
-            with st.expander("View combined data for all selected types"):
-                display_df = combined_df.copy()
-                display_df["date"] = display_df["date"].dt.strftime("%d/%m/%Y")  # 改为欧洲日期格式
+            # 显示数据表格 - 直接展示，去掉下拉框
+            st.markdown("#### 📊 Combined Data for All Selected Types")
+            display_df = combined_df.copy()
+            display_df["date"] = display_df["date"].dt.strftime("%d/%m/%Y")  # 改为欧洲日期格式
 
-                # 对表格中的 Daily Net Sales 也进行四舍五入取整
-                display_df.loc[display_df["data_type"] == "Daily Net Sales", "value"] = display_df.loc[
-                    display_df["data_type"] == "Daily Net Sales", "value"
-                ].apply(lambda x: proper_round(x) if not pd.isna(x) else 0)
+            # 对表格中的 Daily Net Sales 也进行四舍五入取整
+            display_df.loc[display_df["data_type"] == "Daily Net Sales", "value"] = display_df.loc[
+                display_df["data_type"] == "Daily Net Sales", "value"
+            ].apply(lambda x: proper_round(x) if not pd.isna(x) else 0)
 
-                display_df = display_df.rename(columns={
-                    "date": "Date",
-                    "Category": "Category",
-                    "data_type": "Data Type",
-                    "value": "Value"
-                })
-                # 修复：按日期正确排序
-                display_df["Date_dt"] = pd.to_datetime(display_df["Date"], format='%d/%m/%Y')
-                display_df = display_df.sort_values(["Date_dt", "Category", "Data Type"])
-                display_df = display_df.drop("Date_dt", axis=1)
-                st.dataframe(display_df, use_container_width=True)
+            display_df = display_df.rename(columns={
+                "date": "Date",
+                "Category": "Category",
+                "data_type": "Data Type",
+                "value": "Value"
+            })
+            # 修复：按日期正确排序
+            display_df["Date_dt"] = pd.to_datetime(display_df["Date"], format='%d/%m/%Y')
+            display_df = display_df.sort_values(["Date_dt", "Category", "Data Type"])
+            display_df = display_df.drop("Date_dt", axis=1)
+
+            # === 修改1：表格容器宽度跟随表格内容 ===
+            # 计算表格总宽度
+            total_width = 0
+            for column in display_df.columns:
+                header_len = len(str(column))
+                # 估算列宽：标题长度+数据最大长度+2字符边距
+                data_len = display_df[column].astype(str).str.len().max()
+                col_width = max(header_len, data_len) + 2
+                total_width += col_width
+
+            # 设置表格容器样式
+            st.markdown(f"""
+            <style>
+            /* 表格容器 - 宽度跟随内容 */
+            [data-testid="stExpander"] {{
+                width: auto !important;
+                min-width: {total_width}ch !important;
+                max-width: 100% !important;
+            }}
+            /* 让表格左右可滚动 */
+            [data-testid="stDataFrame"] div[role="grid"] {{
+                overflow-x: auto !important;
+                width: auto !important;
+            }}
+            /* 自动列宽，不强制占满 */
+            [data-testid="stDataFrame"] table {{
+                table-layout: auto !important;
+                width: auto !important;
+            }}
+            /* 所有单元格左对齐 */
+            [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {{
+                text-align: left !important;
+                justify-content: flex-start !important;
+            }}
+            /* 防止省略号 */
+            [data-testid="stDataFrame"] td {{
+                white-space: nowrap !important;
+            }}
+            </style>
+            """, unsafe_allow_html=True)
+
+            # === 新逻辑：列宽根据标题字符串长度设置 ===
+            column_config = {}
+            for column in display_df.columns:
+                header_len = len(str(column))
+                column_config[column] = st.column_config.Column(
+                    column,
+                    width=f"{header_len + 2}ch"
+                )
+
+            # 对3M/6M平均值列四舍五入保留两位小数
+            avg_mask = display_df["Data Type"].str.contains("3M Avg|6M Avg", case=False, na=False)
+            display_df.loc[avg_mask, "Value"] = display_df.loc[avg_mask, "Value"].apply(
+                lambda x: round(x, 2) if pd.notna(x) else x
+            )
+
+            st.dataframe(display_df, use_container_width=False, column_config=column_config)
+
         else:
             st.warning("No data available for the selected combination.")
+    else:
+        # 修改1：如果没有选择完整，显示提示信息
+        if not (has_time_range and has_data_sel and has_cats_sel):
+            st.info("👆 Please select options from all three dropdowns to view the chart and table.")

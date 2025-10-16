@@ -393,13 +393,15 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     if not g.empty:
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(px.bar(g, x="Category", y="items_sold", title="Items Sold (by Category)"),
-                            use_container_width=True)
+            fig1 = px.bar(g, x="Category", y="items_sold", title="Items Sold (by Category)", height=400)
+            fig1.update_layout(margin=dict(t=60, b=60))
+            st.plotly_chart(fig1, use_container_width=True)
+
         with c2:
-            # 按销售额从高到低排序
             g_sorted = g.sort_values("daily_sales", ascending=False)
-            st.plotly_chart(px.bar(g_sorted, x="Category", y="daily_sales", title="Daily Sales (by Category)"),
-                            use_container_width=True)
+            fig2 = px.bar(g_sorted, x="Category", y="daily_sales", title="Daily Sales (by Category)", height=400)
+            fig2.update_layout(margin=dict(t=60, b=60))
+            st.plotly_chart(fig2, use_container_width=True)
     else:
         st.info("No data under current filters.")
         return
@@ -755,22 +757,81 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     else:
         st.info("No data for Retail categories.")
 
-    # ---------------- Comment (Retail Top Categories) ----------------
+    # ---------------- Comment (Top Selling Items/Brands) ----------------
     st.markdown("### 💬 Comment")
-    if not df_filtered_fixed[df_filtered_fixed["Category"].isin(retail_cats)].empty:
-        retail_cats_summary = (df_filtered_fixed[df_filtered_fixed["Category"].isin(retail_cats)]
-                               .groupby("Category")["final_sales"]  # 使用修复后的销售额
-                               .sum()
-                               .reset_index()
-                               .sort_values("final_sales", ascending=False)
-                               .head(9))
 
-        lines = []
-        for i in range(0, len(retail_cats_summary), 3):
-            chunk = retail_cats_summary.iloc[i:i + 3]
-            line = " ".join([f"${int(v)} {n}" for n, v in zip(chunk["Category"], chunk["final_sales"])])
-            lines.append(line)
-        st.text("\n".join(lines))
-
+    # Get all items data for the selected time period
+    if start_date is not None and end_date is not None:
+        items_mask = (items_df["date"] >= pd.to_datetime(start_date)) & (
+                items_df["date"] <= pd.Timestamp(end_date))
+        period_items = items_df.loc[items_mask].copy()
     else:
-        st.info("No retail categories available for comments.")
+        period_items = items_df.copy()
+
+    if not period_items.empty:
+        # Define bar categories for sales calculation
+        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+        # Calculate sales for each item (same logic as in calculate_item_sales)
+        def calculate_item_sales_comment(row):
+            if row["Category"] in bar_cats:
+                # Bar分类：使用Net Sales + Tax
+                tax_value = 0
+                if pd.notna(row["Tax"]):
+                    try:
+                        tax_str = str(row["Tax"]).replace('$', '').replace(',', '')
+                        tax_value = float(tax_str) if tax_str else 0
+                    except:
+                        tax_value = 0
+                return proper_round(row["Net Sales"] + tax_value)
+            else:
+                # 非Bar分类：直接使用Net Sales
+                return proper_round(row["Net Sales"])
+
+        period_items["final_sales"] = period_items.apply(calculate_item_sales_comment, axis=1)
+
+        # Clean item names and capitalize properly
+        def format_item_name(item):
+            if pd.isna(item):
+                return item
+
+            # Extract item name (remove ml/L etc.)
+            import re
+            pattern = r'\s*\d+\.?\d*\s*(ml|mL|L|升|毫升)\s*$'
+            cleaned = re.sub(pattern, '', str(item), flags=re.IGNORECASE).strip()
+
+            # Capitalize first letter of each word and ensure proper spacing
+            words = cleaned.split()
+            formatted_words = []
+            for word in words:
+                # Handle special cases like abbreviations
+                if word.upper() in ['CBD', 'USA', 'UK', 'IQF']:
+                    formatted_words.append(word.upper())
+                else:
+                    # Capitalize first letter, keep the rest as is
+                    formatted_words.append(word.capitalize())
+
+            return ' '.join(formatted_words)
+
+        period_items["formatted_item"] = period_items["Item"].apply(format_item_name)
+
+        # Group by formatted item name and sum sales
+        items_summary = period_items.groupby("formatted_item").agg({
+            "final_sales": "sum"
+        }).reset_index().sort_values("final_sales", ascending=False)
+
+        # Get top 9 selling items (to maintain 3 lines with 3 items each)
+        top_items = items_summary.head(9)
+
+        if not top_items.empty:
+            lines = []
+            for i in range(0, len(top_items), 3):
+                chunk = top_items.iloc[i:i + 3]
+                line = " ".join([f"${int(row['final_sales'])} {row['formatted_item']}"
+                                 for _, row in chunk.iterrows()])
+                lines.append(line)
+            st.text("\n".join(lines))
+        else:
+            st.info("No item data available for comments.")
+    else:
+        st.info("No item data available for comments.")
