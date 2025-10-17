@@ -24,8 +24,7 @@ init_db()  # 必须先初始化数据库表结构
 init_db_from_drive_once()
 
 st.set_page_config(page_title="Manly Farm Dashboard", layout="wide")
-st.title("📊 Vie Manly Dashboard")
-
+st.markdown("<h1 style='font-size:26px; font-weight:700;'>📊 Vie Manly Dashboard</h1>", unsafe_allow_html=True)
 
 # ✅ 缓存数据库加载
 @st.cache_data(show_spinner="loading...")
