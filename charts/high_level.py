@@ -4,43 +4,7 @@ import plotly.express as px
 import math
 import numpy as np
 from services.db import get_db
-st.markdown("""
-<style>
-/* 缩小页面边距 */
-.block-container {
-    padding-top: 0.5rem !important;
-    padding-bottom: 0rem !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
-    max-width: 100% !important;
-}
 
-/* 让 summary table 更紧凑 */
-[data-testid="stDataFrame"] table {
-    margin-top: -0.3rem !important;
-    margin-bottom: -0.2rem !important;
-}
-
-/* 减小行距与段间距 */
-h1, h2, h3, h4, h5, h6, p {
-    margin-top: 0rem !important;
-    margin-bottom: 0.2rem !important;
-}
-
-/* 修正 selectbox 间距（让下拉框更靠近标题） */
-div[data-baseweb="select"] {
-    margin-top: -0.4rem !important;
-    margin-bottom: -0.2rem !important;
-}
-
-/* 让标题与内容更贴近 */
-div.block-container > div:nth-child(2) {
-    margin-top: -1rem !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.set_page_config(layout="wide")
 
 def _safe_sum(df, col):
     if df is None or df.empty or col not in df.columns:
