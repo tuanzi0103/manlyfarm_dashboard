@@ -561,14 +561,38 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
 
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
+    # === 全局样式：消除顶部标题间距 ===
     st.markdown("""
-    <h2 style='font-size:24px; font-weight:700; margin-bottom:0.3rem !important;'>📊 High Level Report</h2>
     <style>
-    div.block-container > div:nth-child(2) {
-        margin-top: -1rem !important;
+    /* 去掉 Vie Manly Dashboard 与 High Level Report 之间的空白 */
+    div.block-container h1, 
+    div.block-container h2, 
+    div.block-container h3, 
+    div.block-container p {
+        margin-top: 0rem !important;
+        margin-bottom: 0rem !important;
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+    }
+
+    /* 更强力地压缩 Streamlit 自动插入的 vertical space */
+    div.block-container > div {
+        margin-top: 0rem !important;
+        margin-bottom: 0rem !important;
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+    }
+
+    /* 消除标题和选择框之间空隙 */
+    div[data-testid="stVerticalBlock"] > div {
+        margin-top: 0rem !important;
+        margin-bottom: 0rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
+
+    # === 保留标题 ===
+    st.markdown("<h2 style='font-size:24px; font-weight:700;'>📊 High Level Report</h2>", unsafe_allow_html=True)
 
     # 在现有的样式后面添加：
     st.markdown("""
