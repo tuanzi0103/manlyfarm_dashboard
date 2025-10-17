@@ -501,10 +501,12 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     """, unsafe_allow_html=True)
 
     st.markdown("""
-    <h2 style='font-size:22px; font-weight:700; margin-bottom:0.3rem !important;'>🧾 Sales Report by Category</h2>
+    <h2 style='font-size:22px; font-weight:700; margin-top:-2rem !important; margin-bottom:0.2rem !important;'>🧾 Sales Report by Category</h2>
     <style>
-    div.block-container > div:nth-child(2) {
-        margin-top: -1rem !important;
+    /* 去掉 Streamlit 默认标题和上一个元素之间的间距 */
+    div.block-container h2 {
+        padding-top: 0 !important;
+        margin-top: -2rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
