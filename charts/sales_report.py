@@ -26,6 +26,48 @@ def persisting_multiselect(label, options, key, default=None):
     return st.multiselect(label, options, default=st.session_state[key], key=key)
 
 
+def persisting_multiselect_with_width(label, options, key, default=None, width_chars=None):
+    """持久化多选框，带宽度控制（与 high_level.py 一致）"""
+    if key not in st.session_state:
+        st.session_state[key] = default or []
+
+    # 过滤掉不在当前选项中的默认值
+    st.session_state[key] = [item for item in st.session_state[key] if item in options]
+
+    # === 修改：添加自定义宽度参数 ===
+    if width_chars is None:
+        # 默认宽度为标签长度+1字符
+        label_width = len(label)
+        min_width = label_width + 1
+    else:
+        # 使用自定义宽度
+        min_width = width_chars
+
+    st.markdown(f"""
+    <style>
+        /* 强制设置多选框宽度 */
+        [data-testid*="{key}"] {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+        [data-testid*="{key}"] > div {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+        [data-testid*="{key}"] [data-baseweb="select"] {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+        [data-testid*="{key}"] [data-baseweb="select"] > div {{
+            width: {min_width}ch !important;
+            min-width: {min_width}ch !important;
+        }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    return st.multiselect(label, options, default=st.session_state[key], key=key)
+
+
 def _safe_sum(df, col):
     if df is None or df.empty or col not in df.columns:
         return 0.0
@@ -322,8 +364,150 @@ def calculate_item_daily_trends(items_df, selected_categories, selected_items, s
     })[["date", "Sum of Items Sold", "Sum of Daily Sales"]]
 
 
+def get_top_items_by_category(items_df, categories, start_date=None, end_date=None, for_total=False):
+    """获取每个分类销量前3的商品
+    for_total: 如果为True，则返回整个分类组的前3商品
+    """
+    if not categories:
+        return {}
+
+    # 复制数据避免修改原数据
+    filtered_items = items_df.copy()
+
+    # 应用日期筛选
+    if start_date is not None and end_date is not None:
+        mask = (filtered_items["date"] >= pd.to_datetime(start_date)) & (
+                filtered_items["date"] <= pd.Timestamp(end_date))
+        filtered_items = filtered_items.loc[mask]
+
+    # 过滤指定分类的商品
+    filtered_items = filtered_items[filtered_items["Category"].isin(categories)]
+
+    if filtered_items.empty:
+        return {}
+
+    # 定义bar分类
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+
+    # 计算每个商品项的销售数据
+    def calculate_sales(row):
+        if row["Category"] in bar_cats:
+            # Bar分类：使用Net Sales + Tax
+            tax_value = 0
+            if pd.notna(row["Tax"]):
+                try:
+                    tax_str = str(row["Tax"]).replace('$', '').replace(',', '')
+                    tax_value = float(tax_str) if tax_str else 0
+                except:
+                    tax_value = 0
+            return proper_round(row["Net Sales"] + tax_value)
+        else:
+            # 非Bar分类：直接使用Net Sales
+            return proper_round(row["Net Sales"])
+
+    filtered_items["final_sales"] = filtered_items.apply(calculate_sales, axis=1)
+
+    # 清理商品名称 - 移除计量单位但保留数字和商品名
+    def clean_item_name_for_comments(item):
+        if pd.isna(item):
+            return item
+
+        # 移除容量单位但保留前面的数字和商品名
+        import re
+        # 匹配数字后跟g/kg/ml/L/升/毫升等模式，移除整个计量单位部分
+        pattern = r'\s*\d+\.?\d*\s*(g|kg|ml|mL|L|升|毫升|oz|lb)\s*$'
+        cleaned = re.sub(pattern, '', str(item), flags=re.IGNORECASE)
+
+        # 移除首尾空格
+        cleaned = cleaned.strip()
+
+        return cleaned
+
+    filtered_items["clean_item"] = filtered_items["Item"].apply(clean_item_name_for_comments)
+
+    # 格式化商品名称
+    def format_item_name(item):
+        if pd.isna(item) or item == "":
+            return "Unknown"
+
+        # Capitalize first letter of each word and ensure proper spacing
+        words = item.split()
+        formatted_words = []
+        for word in words:
+            # Handle special cases like abbreviations
+            if word.upper() in ['CBD', 'USA', 'UK', 'IQF']:
+                formatted_words.append(word.upper())
+            else:
+                # Capitalize first letter, keep the rest as is
+                formatted_words.append(word.capitalize())
+
+        return ' '.join(formatted_words)
+
+    filtered_items["formatted_item"] = filtered_items["clean_item"].apply(format_item_name)
+
+    if for_total:
+        # 对于总计行，获取整个分类组的前3商品
+        category_items = filtered_items.groupby("formatted_item").agg({
+            "final_sales": "sum"
+        }).reset_index()
+
+        if not category_items.empty:
+            top_3 = category_items.nlargest(3, "final_sales")
+            # 格式：$销售额 商品名
+            top_items_list = [f"${int(row['final_sales'])} {row['formatted_item']}" for _, row in top_3.iterrows()]
+            return ", ".join(top_items_list)
+        else:
+            return "No items"
+    else:
+        # 对于普通行，获取每个分类的前3商品
+        category_items = filtered_items.groupby(["Category", "formatted_item"]).agg({
+            "final_sales": "sum"
+        }).reset_index()
+
+        # 获取每个分类的前3商品
+        top_items_by_category = {}
+        for category in categories:
+            category_data = category_items[category_items["Category"] == category]
+            if not category_data.empty:
+                top_3 = category_data.nlargest(3, "final_sales")
+                # 格式：$销售额 商品名
+                top_items_list = [f"${int(row['final_sales'])} {row['formatted_item']}" for _, row in top_3.iterrows()]
+                top_items_by_category[category] = ", ".join(top_items_list)
+            else:
+                top_items_by_category[category] = "No items"
+
+        return top_items_by_category
+
+
 def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
-    st.header("🧾 Sales Report by Category")
+    # === 全局样式: 让 st.dataframe 里的所有表格文字左对齐 ===
+    st.markdown("""
+    <style>
+    [data-testid="stDataFrame"] table {
+        text-align: left !important;
+    }
+    [data-testid="stDataFrame"] th {
+        text-align: left !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <style>
+    [data-testid="stDataFrame"] td {
+        text-align: left !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <h2 style='font-size:22px; font-weight:700; margin-bottom:0.3rem !important;'>🧾 Sales Report by Category</h2>
+    <style>
+    div.block-container > div:nth-child(2) {
+        margin-top: -1rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     # 预加载所有数据 - 使用与high_level.py相同的数据源
     with st.spinner("Loading data..."):
@@ -334,35 +518,34 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         return
 
     # ---------------- Time Range Filter ----------------
-    st.subheader("📅 Time Range")
+    st.markdown("<h4 style='font-size:16px; font-weight:700;'>📅 Time Range</h4>", unsafe_allow_html=True)
 
     # 🔹 使用三列布局缩短下拉框宽度，与 high_level.py 保持一致
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2, col3, _ = st.columns([1, 1, 1, 4])
 
     with col1:
+        # 应用与 high_level.py 相同的选择框样式
         range_opt = st.selectbox("Select range", ["Custom dates", "WTD", "MTD", "YTD"], key="sr_range")
 
     today = pd.Timestamp.today().normalize()
     start_date, end_date = None, today
 
     if range_opt == "Custom dates":
-        # 使用三列布局，与 "Select range" 一致
-        col_from, col_to, _ = st.columns([1, 1, 1])
+        # 使用与 high_level.py 相同的日期选择器样式
+        col_from, col_to, _ = st.columns([1, 1, 5])
         with col_from:
-            # 改为欧洲日期格式显示
             t1 = st.date_input(
                 "From",
                 value=pd.Timestamp.today().normalize() - pd.Timedelta(days=7),
                 key="sr_date_from",
-                format="DD/MM/YYYY"
+                format="DD/MM/YYYY"  # 欧洲日期格式
             )
         with col_to:
-            # 改为欧洲日期格式显示
             t2 = st.date_input(
                 "To",
                 value=pd.Timestamp.today().normalize(),
                 key="sr_date_to",
-                format="DD/MM/YYYY"
+                format="DD/MM/YYYY"  # 欧洲日期格式
             )
         if t1 and t2:
             start_date, end_date = pd.to_datetime(t1), pd.to_datetime(t2)
@@ -393,13 +576,18 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     if not g.empty:
         c1, c2 = st.columns(2)
         with c1:
-            fig1 = px.bar(g, x="Category", y="items_sold", title="Items Sold (by Category)", height=400)
+            # 只显示Top 10分类
+            g_top10_items = g.head(10)
+            fig1 = px.bar(g_top10_items, x="Category", y="items_sold", title="Items Sold (by Category) - Top 10",
+                          height=400)
             fig1.update_layout(margin=dict(t=60, b=60))
             st.plotly_chart(fig1, use_container_width=True)
 
         with c2:
-            g_sorted = g.sort_values("daily_sales", ascending=False)
-            fig2 = px.bar(g_sorted, x="Category", y="daily_sales", title="Daily Sales (by Category)", height=400)
+            # 只显示Top 10分类
+            g_sorted = g.sort_values("daily_sales", ascending=False).head(10)
+            fig2 = px.bar(g_sorted, x="Category", y="daily_sales", title="Daily Sales (by Category) - Top 10",
+                          height=400)
             fig2.update_layout(margin=dict(t=60, b=60))
             st.plotly_chart(fig2, use_container_width=True)
     else:
@@ -487,10 +675,18 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         return f"color: {color}"
 
     # ---------------- Bar table ----------------
-    st.subheader("📊 Bar Categories")
+    st.markdown("<h4 style='font-size:16px; font-weight:700;'>📊 Bar Categories</h4>", unsafe_allow_html=True)
     bar_df = time_range_summary(df_filtered_fixed, bar_cats, range_opt, start_date, end_date)
 
     if not bar_df.empty:
+        # 获取Bar分类的前3商品
+        bar_top_items = get_top_items_by_category(items_df, bar_cats, start_date, end_date, for_total=False)
+        # 获取Bar分类组的前3商品（用于总计行）
+        bar_total_top_items = get_top_items_by_category(items_df, bar_cats, start_date, end_date, for_total=True)
+
+        # 添加Comments列
+        bar_df["Comments"] = bar_df["Category"].map(bar_top_items)
+
         bar_df = bar_df.rename(columns={
             "Category": "Row Labels",
             "items_sold": "Sum of Items Sold",
@@ -500,23 +696,52 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         })
         bar_df["Weekly change"] = bar_df["Weekly change"].apply(format_change)
 
+        # 创建总计行
+        total_items_sold = bar_df["Sum of Items Sold"].sum()
+        total_daily_sales = bar_df["Sum of Daily Sales"].sum()
+        total_per_day = bar_df["Per day"].sum()
+
+        # 创建数据框（与high_level.py相同的格式）
+        bar_summary_data = {
+            'Row Labels': bar_df["Row Labels"].tolist() + ["Total"],
+            'Sum of Items Sold': bar_df["Sum of Items Sold"].tolist() + [total_items_sold],
+            'Sum of Daily Sales': [f"${x:,.0f}" for x in bar_df["Sum of Daily Sales"]] + [f"${total_daily_sales:,.0f}"],
+            'Weekly change': bar_df["Weekly change"].tolist() + [""],
+            'Per day': bar_df["Per day"].tolist() + [total_per_day],
+            'Comments': bar_df["Comments"].tolist() + [bar_total_top_items]
+        }
+
+        df_bar_summary = pd.DataFrame(bar_summary_data)
+
+        # 设置列配置（与high_level.py相同的宽度配置）
+        column_config = {
+            'Row Labels': st.column_config.Column(width="150px"),
+            'Sum of Items Sold': st.column_config.Column(width="130px"),
+            'Sum of Daily Sales': st.column_config.Column(width="140px"),
+            'Weekly change': st.column_config.Column(width="120px"),
+            'Per day': st.column_config.Column(width="100px"),
+            'Comments': st.column_config.Column(width="300px")
+        }
+
+        # 显示表格（使用与high_level.py相同的格式）
         st.dataframe(
-            bar_df[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales", "Weekly change", "Per day"]]
-            .style.applymap(highlight_change, subset=["Weekly change"]),
-            use_container_width=True
+            df_bar_summary,
+            column_config=column_config,
+            hide_index=True,
+            use_container_width=False
         )
 
         # Bar分类商品项选择 - 使用与 high_level.py 相同的多选框样式
-        st.subheader("📦 Bar Category Items")
+        st.markdown("<h4 style='font-size:16px; font-weight:700;'>📦 Bar Category Items</h4>", unsafe_allow_html=True)
 
-        # 选择Bar分类 - 使用三列布局控制长度
-        col_bar1, col_bar2, col_bar3 = st.columns([1, 1, 1])
+        # 选择Bar分类 - 使用与 high_level.py 相同的多选框样式
+        col_bar1, col_bar2, col_bar3, _ = st.columns([1.3, 1.3, 1.3, 3.1])
         with col_bar1:
-            bar_category_options = sorted(bar_df["Row Labels"].unique())
-            selected_bar_categories = persisting_multiselect(
+            selected_bar_categories = persisting_multiselect_with_width(
                 "Select Bar Categories",
-                options=bar_category_options,
-                key="bar_categories_select"
+                options=sorted(bar_df["Row Labels"].unique()),
+                key="bar_categories_select",
+                width_chars=24
             )
 
         # 根据选择的分类显示商品项
@@ -527,13 +752,14 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                 bar_items_df["clean_item"] = bar_items_df["Item"].apply(extract_item_name)
                 bar_item_options = sorted(bar_items_df["clean_item"].dropna().unique())
 
-                # 选择商品项 - 使用三列布局控制长度
-                col_bar_items1, col_bar_items2, col_bar_items3 = st.columns([1, 1, 1])
+                # 选择商品项
+                col_bar_items1, col_bar_items2, col_bar_items3, _ = st.columns([1.4, 1.4, 1.4, 2.8])
                 with col_bar_items1:
-                    selected_bar_items = persisting_multiselect(
+                    selected_bar_items = persisting_multiselect_with_width(
                         "Select Items from Bar Categories",
                         options=bar_item_options,
-                        key="bar_items_select"
+                        key="bar_items_select",
+                        width_chars=24  # 新增宽度参数
                     )
 
                 # 显示选中的商品项数据
@@ -551,7 +777,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                         st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
 
                         # 显示每日趋势折线图
-                        st.subheader("📈 Daily Trends for Selected Bar Items")
+                        #st.markdown("<h4 style='font-size:16px; font-weight:700;'>📈 Daily Trends for Selected Bar Items</h4>", unsafe_allow_html=True)
                         bar_daily_trends = calculate_item_daily_trends(
                             items_df, selected_bar_categories, selected_bar_items, start_date, end_date
                         )
@@ -628,11 +854,19 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         st.info("No data for Bar categories.")
 
     # ---------------- Retail table + Multiselect ----------------
-    st.subheader("📊 Retail Categories")
+    st.markdown("<h4 style='font-size:16px; font-weight:700;'>📊 Retail Categories</h4>", unsafe_allow_html=True)
 
     retail_df = time_range_summary(df_filtered_fixed, retail_cats, range_opt, start_date, end_date)
 
     if not retail_df.empty:
+        # 获取Retail分类的前3商品
+        retail_top_items = get_top_items_by_category(items_df, retail_cats, start_date, end_date, for_total=False)
+        # 获取Retail分类组的前3商品（用于总计行）
+        retail_total_top_items = get_top_items_by_category(items_df, retail_cats, start_date, end_date, for_total=True)
+
+        # 添加Comments列
+        retail_df["Comments"] = retail_df["Category"].map(retail_top_items)
+
         retail_df = retail_df.rename(columns={
             "Category": "Row Labels",
             "items_sold": "Sum of Items Sold",
@@ -642,23 +876,52 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         })
         retail_df["Weekly change"] = retail_df["Weekly change"].apply(format_change)
 
+        # 创建总计行
+        total_items_sold = retail_df["Sum of Items Sold"].sum()
+        total_daily_sales = retail_df["Sum of Daily Sales"].sum()
+        total_per_day = retail_df["Per day"].sum()
+
+        # 创建数据框（与high_level.py相同的格式）
+        retail_summary_data = {
+            'Row Labels': retail_df["Row Labels"].tolist() + ["Total"],
+            'Sum of Items Sold': retail_df["Sum of Items Sold"].tolist() + [total_items_sold],
+            'Sum of Daily Sales': [f"${x:,.0f}" for x in retail_df["Sum of Daily Sales"]] + [f"${total_daily_sales:,.0f}"],
+            'Weekly change': retail_df["Weekly change"].tolist() + [""],
+            'Per day': retail_df["Per day"].tolist() + [total_per_day],
+            'Comments': retail_df["Comments"].tolist() + [retail_total_top_items]
+        }
+
+        df_retail_summary = pd.DataFrame(retail_summary_data)
+
+        # 设置列配置（与high_level.py相同的宽度配置）
+        column_config = {
+            'Row Labels': st.column_config.Column(width="150px"),
+            'Sum of Items Sold': st.column_config.Column(width="130px"),
+            'Sum of Daily Sales': st.column_config.Column(width="140px"),
+            'Weekly change': st.column_config.Column(width="120px"),
+            'Per day': st.column_config.Column(width="100px"),
+            'Comments': st.column_config.Column(width="300px")
+        }
+
+        # 显示表格（使用与high_level.py相同的格式）
         st.dataframe(
-            retail_df[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales", "Weekly change", "Per day"]]
-            .style.applymap(highlight_change, subset=["Weekly change"]),
-            use_container_width=True
+            df_retail_summary,
+            column_config=column_config,
+            hide_index=True,
+            use_container_width=False
         )
 
         # Retail分类商品项选择 - 使用与 high_level.py 相同的多选框样式
-        st.subheader("📦 Retail Category Items")
+        st.markdown("<h4 style='font-size:16px; font-weight:700;'>📦 Retail Category Items</h4>", unsafe_allow_html=True)
 
-        # 选择Retail分类 - 使用三列布局控制长度
-        col_retail1, col_retail2, col_retail3 = st.columns([1, 1, 1])
+        # 选择Retail分类 - 使用与 high_level.py 相同的多选框样式
+        col_retail1, col_retail2, col_retail3, _ = st.columns([1.3, 1.3, 1.3, 3.1])
         with col_retail1:
-            retail_category_options = sorted(retail_df["Row Labels"].unique())
-            selected_retail_categories = persisting_multiselect(
+            selected_retail_categories = persisting_multiselect_with_width(
                 "Select Retail Categories",
-                options=retail_category_options,
-                key="retail_categories_select"
+                options=sorted(retail_df["Row Labels"].unique()),
+                key="retail_categories_select",
+                width_chars=24
             )
 
         # 根据选择的分类显示商品项
@@ -669,13 +932,14 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                 retail_items_df["clean_item"] = retail_items_df["Item"].apply(extract_item_name)
                 retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
 
-                # 选择商品项 - 使用三列布局控制长度
-                col_retail_items1, col_retail_items2, col_retail_items3 = st.columns([1, 1, 1])
+                # 选择商品项
+                col_retail_items1, col_retail_items2, col_retail_items3, _ = st.columns([1.4, 1.4, 1.4, 2.8])
                 with col_retail_items1:
-                    selected_retail_items = persisting_multiselect(
+                    selected_retail_items = persisting_multiselect_with_width(
                         "Select Items from Retail Categories",
                         options=retail_item_options,
-                        key="retail_items_select"
+                        key="retail_items_select",
+                        width_chars=24  # 新增宽度参数
                     )
 
                 # 显示选中的商品项数据
@@ -693,7 +957,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                         st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
 
                         # 显示每日趋势折线图
-                        st.subheader("📈 Daily Trends for Selected Retail Items")
+                        st.markdown("<h4 style='font-size:16px; font-weight:700;'>📈 Daily Trends for Selected Retail Items</h4>", unsafe_allow_html=True)
                         retail_daily_trends = calculate_item_daily_trends(
                             items_df, selected_retail_categories, selected_retail_items, start_date, end_date
                         )
@@ -752,86 +1016,19 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                             st.plotly_chart(fig, use_container_width=True)
                         else:
                             st.info("No daily trend data available for selected Retail items.")
+
+                        # 调试信息：显示数据条数
+                        filtered_debug = items_df[
+                            (items_df["Category"].isin(selected_retail_categories)) &
+                            (items_df["Item"].apply(extract_item_name).isin(selected_retail_items))
+                            ]
+                        if start_date is not None and end_date is not None:
+                            mask = (filtered_debug["date"] >= pd.to_datetime(start_date)) & (
+                                    filtered_debug["date"] <= pd.Timestamp(end_date))
+                            filtered_debug = filtered_debug.loc[mask]
+
+                        st.write(f"**Debug:** Found {len(filtered_debug)} transaction records for selected criteria")
             else:
                 st.info("No items found for selected Retail categories.")
     else:
         st.info("No data for Retail categories.")
-
-    # ---------------- Comment (Top Selling Items/Brands) ----------------
-    st.markdown("### 💬 Comment")
-
-    # Get all items data for the selected time period
-    if start_date is not None and end_date is not None:
-        items_mask = (items_df["date"] >= pd.to_datetime(start_date)) & (
-                items_df["date"] <= pd.Timestamp(end_date))
-        period_items = items_df.loc[items_mask].copy()
-    else:
-        period_items = items_df.copy()
-
-    if not period_items.empty:
-        # Define bar categories for sales calculation
-        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
-
-        # Calculate sales for each item (same logic as in calculate_item_sales)
-        def calculate_item_sales_comment(row):
-            if row["Category"] in bar_cats:
-                # Bar分类：使用Net Sales + Tax
-                tax_value = 0
-                if pd.notna(row["Tax"]):
-                    try:
-                        tax_str = str(row["Tax"]).replace('$', '').replace(',', '')
-                        tax_value = float(tax_str) if tax_str else 0
-                    except:
-                        tax_value = 0
-                return proper_round(row["Net Sales"] + tax_value)
-            else:
-                # 非Bar分类：直接使用Net Sales
-                return proper_round(row["Net Sales"])
-
-        period_items["final_sales"] = period_items.apply(calculate_item_sales_comment, axis=1)
-
-        # Clean item names and capitalize properly
-        def format_item_name(item):
-            if pd.isna(item):
-                return item
-
-            # Extract item name (remove ml/L etc.)
-            import re
-            pattern = r'\s*\d+\.?\d*\s*(ml|mL|L|升|毫升)\s*$'
-            cleaned = re.sub(pattern, '', str(item), flags=re.IGNORECASE).strip()
-
-            # Capitalize first letter of each word and ensure proper spacing
-            words = cleaned.split()
-            formatted_words = []
-            for word in words:
-                # Handle special cases like abbreviations
-                if word.upper() in ['CBD', 'USA', 'UK', 'IQF']:
-                    formatted_words.append(word.upper())
-                else:
-                    # Capitalize first letter, keep the rest as is
-                    formatted_words.append(word.capitalize())
-
-            return ' '.join(formatted_words)
-
-        period_items["formatted_item"] = period_items["Item"].apply(format_item_name)
-
-        # Group by formatted item name and sum sales
-        items_summary = period_items.groupby("formatted_item").agg({
-            "final_sales": "sum"
-        }).reset_index().sort_values("final_sales", ascending=False)
-
-        # Get top 9 selling items (to maintain 3 lines with 3 items each)
-        top_items = items_summary.head(9)
-
-        if not top_items.empty:
-            lines = []
-            for i in range(0, len(top_items), 3):
-                chunk = top_items.iloc[i:i + 3]
-                line = " ".join([f"${int(row['final_sales'])} {row['formatted_item']}"
-                                 for _, row in chunk.iterrows()])
-                lines.append(line)
-            st.text("\n".join(lines))
-        else:
-            st.info("No item data available for comments.")
-    else:
-        st.info("No item data available for comments.")

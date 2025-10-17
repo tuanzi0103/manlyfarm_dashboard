@@ -561,7 +561,28 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
 
 
 def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
-    st.header("📊 High Level report")
+    st.markdown("""
+    <h2 style='font-size:24px; font-weight:700; margin-bottom:0.3rem !important;'>📊 High Level Report</h2>
+    <style>
+    div.block-container > div:nth-child(2) {
+        margin-top: -1rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 在现有的样式后面添加：
+    st.markdown("""
+    <style>
+    /* 让多选框列更紧凑 */
+    div[data-testid="column"] {
+        padding: 0 8px !important;
+    }
+    div[data-baseweb="select"] {
+        min-width: 12ch !important;
+        max-width: 20ch !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     # 预加载所有数据
     with st.spinner("Loading data..."):
@@ -744,131 +765,134 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # 计算bar和retail数据
     bar_retail_data = calculate_bar_retail_data(category_tx, selected_date, daily)
 
-    # 显示选定日期
-    st.markdown(f"### Selected Date: {selected_date.strftime('%d/%m/%Y')}")
+    # 显示选定日期（字体加大）
+    st.markdown(
+        f"<h3 style='font-size:18px; font-weight:700;'>Selected Date: {selected_date.strftime('%d/%m/%Y')}</h3>",
+        unsafe_allow_html=True)
 
-    # 第一行：总数据
-    labels_values = list(kpis_main.items()) + [
-        ("Inventory Value", inv_value_latest),
+    # ===== 组装三行数据 =====
+    total_row = [
+        f"${proper_round(kpis_main['Daily Net Sales']):,}",
+        f"{proper_round(kpis_main['Daily Transactions']):,}",
+        f"{proper_round(kpis_main['Number of Customers']):,}",
+        f"${kpis_main['Avg Transaction']:.2f}",
+        f"${proper_round(kpis_main['3M Avg']):,}",
+        f"${proper_round(kpis_main['6M Avg']):,}",
+        f"{proper_round(kpis_main['Items Sold']):,}",
+        f"${proper_round(inv_value_latest):,} <br><span style='font-size:10px; color:#666;'>as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}</span>"
     ]
-    captions = {
-        "Inventory Value": f"as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}",
+
+    bar_row = [
+        f"${proper_round(bar_retail_data['bar']['Daily Net Sales']):,}",
+        f"{proper_round(bar_retail_data['bar']['Daily Transactions']):,}",
+        f"{proper_round(bar_retail_data['bar']['Number of Customers']):,}",
+        f"${bar_retail_data['bar']['Avg Transaction']:.2f}",
+        f"${proper_round(bar_retail_data['bar']['3M Avg']):,}",
+        f"${proper_round(bar_retail_data['bar']['6M Avg']):,}",
+        f"{proper_round(bar_retail_data['bar']['Items Sold']):,}",
+        "-"
+    ]
+
+    retail_row = [
+        f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}",
+        f"{proper_round(bar_retail_data['retail']['Daily Transactions']):,}",
+        f"{proper_round(bar_retail_data['retail']['Number of Customers']):,}",
+        f"${bar_retail_data['retail']['Avg Transaction']:.2f}",
+        f"${proper_round(bar_retail_data['retail']['3M Avg']):,}",
+        f"${proper_round(bar_retail_data['retail']['6M Avg']):,}",
+        f"{proper_round(bar_retail_data['retail']['Items Sold']):,}",
+        "-"
+    ]
+
+    # ===== 渲染成 HTML 表格 =====
+    # === 新增：Summary Table列宽配置 ===
+    column_widths = {
+        "label": "110px",
+        "Daily Net Sales": "130px",
+        "Daily Transactions": "140px",
+        "Number of Customers": "140px",
+        "Avg Transaction": "125px",
+        "3M Avg": "115px",
+        "6M Avg": "115px",
+        "Items Sold": "115px",
+        "Inventory Value": "140px"
     }
 
-    # 修改KPI显示部分
-    st.markdown("**Total Data**")
-    for row in range(0, len(labels_values), 8):
-        cols = st.columns(8)
-        for i, col in enumerate(cols):
-            idx = row + i
-            if idx < len(labels_values):
-                label, val = labels_values[idx]
-                if pd.isna(val):
-                    display = "-"
-                else:
-                    if label == "Avg Transaction":
-                        display = f"${val:,.2f}"
-                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg", "Inventory Value"]:
-                        display = f"${proper_round(val):,}"
-                    else:
-                        display = f"{proper_round(val):,}"
-                with col:
-                    st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
-                    if label in captions:
-                        st.markdown(f"<div style='font-size:10px;'>{captions[label]}</div>", unsafe_allow_html=True)
+    # 创建数据框
+    # 创建数据框
+    summary_data = {
+        '': ['Total Data', 'Bar Data', 'Retail Data'],
+        'Daily Net Sales': [
+            f"${proper_round(kpis_main['Daily Net Sales']):,}",
+            f"${proper_round(bar_retail_data['bar']['Daily Net Sales']):,}",
+            f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}"
+        ],
+        'Daily Transactions': [
+            f"{proper_round(kpis_main['Daily Transactions']):,}",
+            f"{proper_round(bar_retail_data['bar']['Daily Transactions']):,}",
+            f"{proper_round(bar_retail_data['retail']['Daily Transactions']):,}"
+        ],
+        'Number of Customers': [
+            f"{proper_round(kpis_main['Number of Customers']):,}",
+            f"{proper_round(bar_retail_data['bar']['Number of Customers']):,}",
+            f"{proper_round(bar_retail_data['retail']['Number of Customers']):,}"
+        ],
+        'Avg Transaction': [
+            f"${kpis_main['Avg Transaction']:.2f}",
+            f"${bar_retail_data['bar']['Avg Transaction']:.2f}",
+            f"${bar_retail_data['retail']['Avg Transaction']:.2f}"
+        ],
+        '3M Avg': [
+            f"${proper_round(kpis_main['3M Avg']):,}",
+            f"${proper_round(bar_retail_data['bar']['3M Avg']):,}",
+            f"${proper_round(bar_retail_data['retail']['3M Avg']):,}"
+        ],
+        '6M Avg': [
+            f"${proper_round(kpis_main['6M Avg']):,}",
+            f"${proper_round(bar_retail_data['bar']['6M Avg']):,}",
+            f"${proper_round(bar_retail_data['retail']['6M Avg']):,}"
+        ],
+        'Items Sold': [
+            f"{proper_round(kpis_main['Items Sold']):,}",
+            f"{proper_round(bar_retail_data['bar']['Items Sold']):,}",
+            f"{proper_round(bar_retail_data['retail']['Items Sold']):,}"
+        ],
+        'Inventory Value': [
+            f"${proper_round(inv_value_latest):,} (as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'})",
+            "-",
+            "-"
+        ]
+    }
 
-    # 第二行：Bar数据
-    st.markdown("**Bar Data**")
-    bar_labels_values = [
-        ("Daily Net Sales", bar_retail_data["bar"]["Daily Net Sales"]),
-        ("Daily Transactions", bar_retail_data["bar"]["Daily Transactions"]),
-        ("Number of Customers", bar_retail_data["bar"]["Number of Customers"]),
-        ("Avg Transaction", bar_retail_data["bar"]["Avg Transaction"]),
-        ("3M Avg", bar_retail_data["bar"]["3M Avg"]),
-        ("6M Avg", bar_retail_data["bar"]["6M Avg"]),
-        ("Items Sold", bar_retail_data["bar"]["Items Sold"])
-    ]
+    df_summary = pd.DataFrame(summary_data)
 
-    for row in range(0, len(bar_labels_values), 8):
-        cols = st.columns(8)
-        for i, col in enumerate(cols):
-            idx = row + i
-            if idx < len(bar_labels_values):
-                label, val = bar_labels_values[idx]
-                if pd.isna(val):
-                    display = "-"
-                else:
-                    if label == "Avg Transaction":
-                        display = f"${val:,.2f}"
-                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg"]:
-                        display = f"${proper_round(val):,}"
-                    else:
-                        display = f"{proper_round(val):,}"
-                with col:
-                    st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
+    # 设置列配置
+    column_config = {
+        '': st.column_config.Column(width="110px"),
+        'Daily Net Sales': st.column_config.Column(width="130px"),
+        'Daily Transactions': st.column_config.Column(width="140px"),
+        'Number of Customers': st.column_config.Column(width="140px"),
+        'Avg Transaction': st.column_config.Column(width="125px"),
+        '3M Avg': st.column_config.Column(width="115px"),
+        '6M Avg': st.column_config.Column(width="115px"),
+        'Items Sold': st.column_config.Column(width="115px"),
+        'Inventory Value': st.column_config.Column(width="180px")  # 稍微增加宽度以容纳日期信息
+    }
 
-    # 第三行：Retail数据
-    st.markdown("**Retail Data**")
-    retail_labels_values = [
-        ("Daily Net Sales", bar_retail_data["retail"]["Daily Net Sales"]),
-        ("Daily Transactions", bar_retail_data["retail"]["Daily Transactions"]),
-        ("Number of Customers", bar_retail_data["retail"]["Number of Customers"]),
-        ("Avg Transaction", bar_retail_data["retail"]["Avg Transaction"]),
-        ("3M Avg", bar_retail_data["retail"]["3M Avg"]),
-        ("6M Avg", bar_retail_data["retail"]["6M Avg"]),
-        ("Items Sold", bar_retail_data["retail"]["Items Sold"])
-    ]
-
-    for row in range(0, len(retail_labels_values), 8):
-        cols = st.columns(8)
-        for i, col in enumerate(cols):
-            idx = row + i
-            if idx < len(retail_labels_values):
-                label, val = retail_labels_values[idx]
-                if pd.isna(val):
-                    display = "-"
-                else:
-                    if label == "Avg Transaction":
-                        display = f"${val:,.2f}"
-                    elif label in ["Daily Net Sales", "3M Avg", "6M Avg"]:
-                        display = f"${proper_round(val):,}"
-                    else:
-                        display = f"{proper_round(val):,}"
-                with col:
-                    st.markdown(f"<div style='font-size:18px; font-weight:600'>{display}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='font-size:12px;'>{label}</div>", unsafe_allow_html=True)
+    # 显示表格
+    st.markdown("<h4 style='font-size:16px; font-weight:700; margin-top:1rem;'>Summary Table</h4>",
+                unsafe_allow_html=True)
+    st.dataframe(
+        df_summary,
+        column_config=column_config,
+        hide_index=True,
+        use_container_width=False
+    )
 
     st.markdown("---")
 
     # === 交互选择 ===
-    st.subheader("🔍 Select Parameters")
-
-    # === 修改：单行紧凑布局 ===
-    st.markdown("""
-    <style>
-    /* 参数选择部分的容器 - 紧凑布局 */
-    div[data-testid="stVerticalBlock"] > div {
-        display: flex !important;
-        flex-wrap: wrap !important;
-        gap: 1rem !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # 使用单行紧凑布局 - 四个多选框依次排列
-    time_range = persisting_multiselect("Choose time range", ["Custom dates", "WTD", "MTD", "YTD"], key="hl_time", width_chars=16)
-
-    # 数据类型部分 - 在同一行
-    base_data_options = ["Daily Net Sales", "Daily Transactions", "Avg Transaction", "Items Sold", "Inventory Value"]
-    avg_data_options = ["3M Avg", "6M Avg"]
-
-    # 显示基础数据类型
-    data_sel_base = persisting_multiselect("Choose data types", base_data_options, key="hl_data_base", width_chars=18)
-
-    # 显示平均值选项
-    data_sel_avg = persisting_multiselect("Choose averages", avg_data_options, key="hl_data_avg", width_chars=15)
+    st.markdown("<h4 style='font-size:16px; font-weight:700;'>🔍 Select Parameters</h4>", unsafe_allow_html=True)
 
     # 分类选择
     if category_tx is None or category_tx.empty:
@@ -897,7 +921,56 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     special_cats = ["bar", "retail", "total"]
     all_cats_extended = special_cats + sorted([c for c in valid_cats if c not in special_cats])
-    cats_sel = persisting_multiselect("Choose categories", all_cats_extended, key="hl_cats", width_chars=16)
+
+    # === 四个多选框一行显示（使用 columns，等宽且靠左） ===
+
+    # 定义每个框的宽度比例
+    col1, col2, col3, col4, _ = st.columns([1.3, 1.3, 1.3, 1.3, 1.8])
+
+    with col1:
+        time_range = persisting_multiselect(
+            "Choose time range",
+            ["Custom dates", "WTD", "MTD", "YTD"],
+            key="hl_time",
+            width_chars=24
+        )
+
+    with col2:
+        data_sel_base = persisting_multiselect(
+            "Choose data types",
+            ["Daily Net Sales", "Daily Transactions", "Avg Transaction", "Items Sold", "Inventory Value"],
+            key="hl_data_base",
+            width_chars=24
+        )
+
+    with col3:
+        data_sel_avg = persisting_multiselect(
+            "Choose averages",
+            ["3M Avg", "6M Avg"],
+            key="hl_data_avg",
+            width_chars=24
+        )
+
+    with col4:
+        cats_sel = persisting_multiselect(
+            "Choose categories",
+            all_cats_extended,
+            key="hl_cats",
+            width_chars=24
+        )
+
+    # 加一小段 CSS，让四个框左对齐、间距最小
+    st.markdown("""
+    <style>
+    div[data-testid="column"] {
+        padding: 0 4px !important;
+    }
+    div[data-baseweb="select"] {
+        min-width: 20ch !important;
+        max-width: 30ch !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     # 合并数据类型选择
     data_sel = data_sel_base.copy()
@@ -919,22 +992,34 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     t1 = None
     t2 = None
 
+    # === 📅 Custom Date Range（保持原逻辑 + 显示 dd/mm/yyyy 格式） ===
     if "Custom dates" in time_range:
         custom_dates_selected = True
-        st.markdown("#### 📅 Custom Date Range")
-        col_from, col_to, _ = st.columns([1, 1, 1])
+
+        # 标题风格与 Select Specific Date 一致
+        st.markdown("<h4 style='font-size:16px; font-weight:700;'>📅 Custom Date Range</h4>", unsafe_allow_html=True)
+
+        # 列布局：与上面多选框等宽比例
+        col_from, col_to, _ = st.columns([1, 1, 5])
+
+        # 日期输入框 - 修改为 dd/mm/yy 格式
         with col_from:
             t1 = st.date_input(
                 "From",
                 value=pd.Timestamp.today().normalize() - pd.Timedelta(days=7),
-                key="date_from"
+                key="date_from",
+                format="DD/MM/YYYY"  # 修改这里
             )
+
         with col_to:
             t2 = st.date_input(
                 "To",
                 value=pd.Timestamp.today().normalize(),
-                key="date_to"
+                key="date_to",
+                format="DD/MM/YYYY"  # 修改这里
             )
+
+        # 移除原有的JavaScript格式化代码，因为现在使用内置format参数
 
     # 修改1：检查三个多选框是否都有选择
     has_time_range = bool(time_range)
@@ -1070,7 +1155,3 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
         else:
             st.warning("No data available for the selected combination.")
-    else:
-        # 修改1：如果没有选择完整，显示提示信息
-        if not (has_time_range and has_data_sel and has_cats_sel):
-            st.info("👆 Please select options from all three dropdowns to view the chart and table.")
