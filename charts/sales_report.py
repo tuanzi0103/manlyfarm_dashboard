@@ -967,7 +967,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
 
             # 选择Retail分类和商品项 - 放在同一行
-            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.6, 1.3, 2.9])
+            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.8, 1.3, 2.7])
             with col_retail1:
                 selected_retail_categories = persisting_multiselect_with_width(
                     "Select Retail Categories",
@@ -980,7 +980,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     "Select Items from Retail Categories",
                     options=retail_item_options,
                     key="retail_items_select",
-                    width_chars=30
+                    width_chars=35
                 )
 
             # 显示选中的商品项数据
