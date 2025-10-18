@@ -6,7 +6,36 @@ import numpy as np
 from datetime import datetime, timedelta
 import math
 from services.db import get_db
+# === 添加页面配置 - 修复布局不一致问题 ===
+st.set_page_config(
+    page_title="Sales Report",
+    layout="wide", 
+    initial_sidebar_state="auto",
+    menu_items=None
+)
 
+# === 全局样式: 让 st.dataframe 里的所有表格文字左对齐 ===
+st.markdown("""
+<style>
+[data-testid="stDataFrame"] table {
+    text-align: left !important;
+}
+[data-testid="stDataFrame"] th {
+    text-align: left !important;
+}
+[data-testid="stDataFrame"] td {
+    text-align: left !important;
+}
+
+/* 去掉 Streamlit 默认标题和上一个元素之间的间距 */
+div.block-container h2 {
+    padding-top: 0 !important;
+    margin-top: -2rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# 原有的函数定义继续...
 
 def proper_round(x):
     """标准的四舍五入方法，0.5总是向上舍入"""
