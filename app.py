@@ -155,21 +155,21 @@ if st.sidebar.button("➕ Add Unit"):
 
 # === Section 选择 ===
 section = st.sidebar.radio("📂 Sections", [
-    "Section 1: High Level report",
-    "Section 2: Sales report by category",
-    "Section 3: Inventory",
-    "Section 4: product mix",
-    "Section 5: Customers insights"
+    "High Level report",
+    "Sales report by category",
+    "Inventory",
+    "product mix",
+    "Customers insights"
 ])
 
 # === 主体展示 ===
-if section == "Section 1: High Level report":
+if section == "High Level report":
     show_high_level(tx, mem, inv)
-elif section == "Section 2: Sales report by category":
+elif section == "Sales report by category":
     show_sales_report(tx, inv)
-elif section == "Section 3: Inventory":
+elif section == "Inventory":
     show_inventory(tx, inv)
-elif section == "Section 4: product mix":
+elif section == "product mix":
     show_product_mix_only(tx)
-elif section == "Section 5: Customers insights":
+elif section == "Customers insights":
     show_customer_segmentation(tx, mem)
