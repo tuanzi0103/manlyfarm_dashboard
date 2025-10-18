@@ -6,58 +6,6 @@ import numpy as np
 from datetime import datetime, timedelta
 import math
 from services.db import get_db
-# === 添加页面配置 - 修复布局不一致问题 ===
-st.set_page_config(
-    page_title="Sales Report",
-    layout="wide", 
-    initial_sidebar_state="auto",
-    menu_items=None
-)
-st.markdown("""
-<style>
-/* 让所有 Streamlit dataframe 支持横向滚动 */
-[data-testid="stDataFrame"] {
-    overflow-x: auto !important;
-    overflow-y: hidden !important;
-}
-
-/* 限制高度防止垂直滚动影响布局 */
-[data-testid="stDataFrame"] > div {
-    overflow-x: auto !important;
-}
-
-/* 让表格的底部显示水平滚动条 */
-[data-testid="stDataFrame"] table {
-    display: block !important;
-    overflow-x: auto !important;
-    white-space: nowrap !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
-# === 全局样式: 让 st.dataframe 里的所有表格文字左对齐 ===
-st.markdown("""
-<style>
-[data-testid="stDataFrame"] table {
-    text-align: left !important;
-}
-[data-testid="stDataFrame"] th {
-    text-align: left !important;
-}
-[data-testid="stDataFrame"] td {
-    text-align: left !important;
-}
-
-/* 去掉 Streamlit 默认标题和上一个元素之间的间距 */
-div.block-container h2 {
-    padding-top: 0 !important;
-    margin-top: -2rem !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# 原有的函数定义继续...
 
 def proper_round(x):
     """标准的四舍五入方法，0.5总是向上舍入"""
