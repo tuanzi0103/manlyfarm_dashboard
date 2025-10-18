@@ -239,51 +239,40 @@ def prepare_sales_data(df_filtered):
 
 
 def extract_brand_name(item_name):
-    """从商品名称中提取品牌名称 - 改进版本"""
-    if pd.isna(item_name) or item_name == "":
+    """
+    提取品牌：对清洗后的 Item 名称取第一个词作为品牌。
+    这样像 "TLD Frenchs Forest Raw Honey 1Kg" -> "TLD"
+          "HTG Organic Maple Syrup 1L" -> "HTG"
+          "SPIRAL ORG Maple Syrup 250ml" -> "SPIRAL"
+          "HANDHOE Macadamia Butter Roasted Crunchy 225g" -> "HANDHOE"
+          "Beerose Honey 500g" -> "BEEROSE"
+    避免把 'Butter/Honey/Maple/Jam/Tahini' 等产品词识别成品牌。
+    """
+    import re
+    if pd.isna(item_name):
         return "Other"
 
-    item_str = str(item_name).strip()
+    # 先用你已有的清洗函数做末尾规格/前缀清理
+    cleaned = clean_item_name_for_comments(str(item_name))
 
-    # 常见品牌识别 - 扩展品牌列表
-    brand_keywords = {
-        "LOLO": ["lolo"],
-        "IQF": ["iqf"],
-        "CBD": ["cbd"],
-        "USA": ["usa"],
-        "UK": ["uk"],
-        "BUTTER": ["butter"],
-        "PEANUT": ["peanut"],
-        "BLACK CHERRY": ["black cherry"],
-        "CARAMEL": ["caramel"],
-        "PECAN": ["pecan"],
-        "RASPBERRY": ["raspberry"]
-    }
+    # 去掉多余空白
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "Other"
 
-    # 检查是否包含品牌关键词
-    for brand, keywords in brand_keywords.items():
-        for keyword in keywords:
-            if keyword in item_str.lower():
-                return brand
+    # 按空格或连字符等分割
+    tokens = re.split(r"[ \t\-_/]+", cleaned)
 
-    # 对于多单词商品名，尝试提取更有意义的品牌名
-    words = item_str.split()
-    if len(words) >= 2:
-        # 检查前两个单词的组合是否构成品牌
-        first_two = ' '.join(words[:2]).upper()
-        # 如果前两个单词看起来像品牌名（不包含数字和特殊字符）
-        if all(c.isalpha() or c.isspace() for c in first_two):
-            return first_two
-
-    # 如果有多于一个单词，返回前两个单词作为品牌
-    if len(words) >= 2:
-        return f"{words[0].upper()} {words[1].upper()}"
-
-    # 如果只有一个单词，返回该单词
-    if words:
-        first_word = ''.join(filter(str.isalpha, words[0]))
-        if first_word:
-            return first_word.upper()
+    # 取第一个“看起来像品牌”的 token：
+    # - 至少含字母
+    # - 非纯数字
+    for tok in tokens:
+        has_alpha = any(c.isalpha() for c in tok)
+        if has_alpha and not tok.isdigit():
+            # 清掉结尾的逗号/点号之类
+            tok = tok.strip(",.;:()[]{}")
+            if tok:
+                return tok.upper()
 
     return "Other"
 
