@@ -793,7 +793,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             'Sum of Daily Sales': st.column_config.Column(width="140px"),
             'Weekly change': st.column_config.Column(width="120px"),
             'Per day': st.column_config.Column(width="100px"),
-            'Comments': st.column_config.Column(width="300px")
+            'Comments': st.column_config.Column(width="100px")
         }
 
         # 显示表格（使用与high_level.py相同的格式）
@@ -843,7 +843,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                         'Category': st.column_config.Column(width="150px"),
                         'Item': st.column_config.Column(width="200px"),
                         'Sum of Items Sold': st.column_config.Column(width="130px"),
-                        'Sum of Daily Sales': st.column_config.Column(width="140px")
+                        'Sum of Daily Sales': st.column_config.Column(width="100px")
                     }
 
                     st.dataframe(bar_item_summary, column_config=item_column_config, use_container_width=False)
@@ -945,7 +945,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             'Sum of Daily Sales': st.column_config.Column(width="140px"),
             'Weekly change': st.column_config.Column(width="120px"),
             'Per day': st.column_config.Column(width="100px"),
-            'Comments': st.column_config.Column(width="300px")
+            'Comments': st.column_config.Column(width="100px")
         }
 
         # 显示表格（使用与high_level.py相同的格式）
@@ -967,7 +967,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
 
             # 选择Retail分类和商品项 - 放在同一行
-            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.8, 1.3, 2.7])
+            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 2.0, 1.3, 2.5])
             with col_retail1:
                 selected_retail_categories = persisting_multiselect_with_width(
                     "Select Retail Categories",
@@ -995,7 +995,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                         'Category': st.column_config.Column(width="150px"),
                         'Item': st.column_config.Column(width="200px"),
                         'Sum of Items Sold': st.column_config.Column(width="130px"),
-                        'Sum of Daily Sales': st.column_config.Column(width="140px")
+                        'Sum of Daily Sales': st.column_config.Column(width="100px")
                     }
 
                     st.dataframe(retail_item_summary, column_config=item_column_config, use_container_width=False)
