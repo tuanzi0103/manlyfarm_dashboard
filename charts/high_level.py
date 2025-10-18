@@ -11,37 +11,6 @@ st.set_page_config(
     initial_sidebar_state="auto",
     menu_items=None
 )
-
-# === 全局样式：消除顶部标题间距 ===
-st.markdown("""
-<style>
-/* 去掉 Vie Manly Dashboard 与 High Level Report 之间的空白 */
-div.block-container h1, 
-div.block-container h2, 
-div.block-container h3, 
-div.block-container p {
-    margin-top: 0rem !important;
-    margin-bottom: 0rem !important;
-    padding-top: 0rem !important;
-    padding-bottom: 0rem !important;
-}
-
-/* 更强力地压缩 Streamlit 自动插入的 vertical space */
-div.block-container > div {
-    margin-top: 0rem !important;
-    margin-bottom: 0rem !important;
-    padding-top: 0rem !important;
-    padding-bottom: 0rem !important;
-}
-
-/* 消除标题和选择框之间空隙 */
-div[data-testid="stVerticalBlock"] > div {
-    margin-top: 0rem !important;
-    margin-bottom: 0rem !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
 def _safe_sum(df, col):
     if df is None or df.empty or col not in df.columns:
         return 0.0
