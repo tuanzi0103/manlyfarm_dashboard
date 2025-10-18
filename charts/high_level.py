@@ -983,7 +983,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # === 四个多选框一行显示（使用 columns，等宽且靠左） ===
 
     # 定义每个框的宽度比例
-    col1, col2, col3, col4, _ = st.columns([1.0, 1.2, 0.7, 1.5, 2.6])
+    col1, col2, col3, col4, _ = st.columns([1.0, 1.2, 0.8, 1.5, 2.5])
 
     with col1:
         time_range = persisting_multiselect(
@@ -1006,7 +1006,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             "Choose averages",
             ["3M Avg", "6M Avg"],
             key="hl_data_avg",
-            width_chars=6
+            width_chars=8
         )
 
     with col4:
