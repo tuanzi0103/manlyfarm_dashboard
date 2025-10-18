@@ -13,6 +13,28 @@ st.set_page_config(
     initial_sidebar_state="auto",
     menu_items=None
 )
+st.markdown("""
+<style>
+/* 让所有 Streamlit dataframe 支持横向滚动 */
+[data-testid="stDataFrame"] {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+}
+
+/* 限制高度防止垂直滚动影响布局 */
+[data-testid="stDataFrame"] > div {
+    overflow-x: auto !important;
+}
+
+/* 让表格的底部显示水平滚动条 */
+[data-testid="stDataFrame"] table {
+    display: block !important;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 # === 全局样式: 让 st.dataframe 里的所有表格文字左对齐 ===
 st.markdown("""
@@ -980,7 +1002,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     "Select Items from Retail Categories",
                     options=retail_item_options,
                     key="retail_items_select",
-                    width_chars=35
+                    width_chars=40
                 )
 
             # 显示选中的商品项数据
