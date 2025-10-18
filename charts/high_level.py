@@ -750,7 +750,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             "bar": {
                 "Daily Net Sales": bar_net_sales,
                 "Daily Transactions": bar_transactions,
-                "Number of Customers": bar_customers,
+                "# of Customers": bar_customers,
                 "Avg Transaction": bar_avg_txn,
                 "3M Avg": bar_3m_avg,
                 "6M Avg": bar_6m_avg,
@@ -759,7 +759,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             "retail": {
                 "Daily Net Sales": retail_net_sales,
                 "Daily Transactions": retail_transactions,
-                "Number of Customers": retail_customers,
+                "# of Customers": retail_customers,
                 "Avg Transaction": retail_avg_txn,
                 "3M Avg": retail_3m_avg,
                 "6M Avg": retail_6m_avg,
@@ -771,7 +771,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     kpis_main = {
         "Daily Net Sales": proper_round(df_selected_date["net_sales_with_tax"].sum()),
         "Daily Transactions": df_selected_date["transactions"].sum(),
-        "Number of Customers": calculate_customer_count(tx, selected_date),
+        "# of Customers": calculate_customer_count(tx, selected_date),
         "Avg Transaction": df_selected_date["avg_txn"].mean(),
         "3M Avg": proper_round(daily["3M_Avg_Rolling"].iloc[-1]),
         "6M Avg": proper_round(daily["6M_Avg_Rolling"].iloc[-1]),
@@ -798,7 +798,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     total_row = [
         f"${proper_round(kpis_main['Daily Net Sales']):,}",
         f"{proper_round(kpis_main['Daily Transactions']):,}",
-        f"{proper_round(kpis_main['Number of Customers']):,}",
+        f"{proper_round(kpis_main['# of Customers']):,}",
         f"${kpis_main['Avg Transaction']:.2f}",
         f"${proper_round(kpis_main['3M Avg']):,}",
         f"${proper_round(kpis_main['6M Avg']):,}",
@@ -809,7 +809,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     bar_row = [
         f"${proper_round(bar_retail_data['bar']['Daily Net Sales']):,}",
         f"{proper_round(bar_retail_data['bar']['Daily Transactions']):,}",
-        f"{proper_round(bar_retail_data['bar']['Number of Customers']):,}",
+        f"{proper_round(bar_retail_data['bar']['# of Customers']):,}",
         f"${bar_retail_data['bar']['Avg Transaction']:.2f}",
         f"${proper_round(bar_retail_data['bar']['3M Avg']):,}",
         f"${proper_round(bar_retail_data['bar']['6M Avg']):,}",
@@ -820,7 +820,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     retail_row = [
         f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}",
         f"{proper_round(bar_retail_data['retail']['Daily Transactions']):,}",
-        f"{proper_round(bar_retail_data['retail']['Number of Customers']):,}",
+        f"{proper_round(bar_retail_data['retail']['# of Customers']):,}",
         f"${bar_retail_data['retail']['Avg Transaction']:.2f}",
         f"${proper_round(bar_retail_data['retail']['3M Avg']):,}",
         f"${proper_round(bar_retail_data['retail']['6M Avg']):,}",
@@ -834,7 +834,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         "label": "110px",
         "Daily Net Sales": "130px",
         "Daily Transactions": "140px",
-        "Number of Customers": "140px",
+        "# of Customers": "140px",
         "Avg Transaction": "125px",
         "3M Avg": "115px",
         "6M Avg": "115px",
@@ -843,66 +843,64 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     }
 
     # 创建数据框
-    # 创建数据框
     summary_data = {
-        '': ['Total Data', 'Bar Data', 'Retail Data'],
+        '': ['Bar', 'Retail', 'Total'],
         'Daily Net Sales': [
-            f"${proper_round(kpis_main['Daily Net Sales']):,}",
             f"${proper_round(bar_retail_data['bar']['Daily Net Sales']):,}",
-            f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}"
+            f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}",
+            f"${proper_round(kpis_main['Daily Net Sales']):,}"
         ],
         'Daily Transactions': [
-            f"{proper_round(kpis_main['Daily Transactions']):,}",
             f"{proper_round(bar_retail_data['bar']['Daily Transactions']):,}",
-            f"{proper_round(bar_retail_data['retail']['Daily Transactions']):,}"
+            f"{proper_round(bar_retail_data['retail']['Daily Transactions']):,}",
+            f"{proper_round(kpis_main['Daily Transactions']):,}"
         ],
-        'Number of Customers': [
-            f"{proper_round(kpis_main['Number of Customers']):,}",
-            f"{proper_round(bar_retail_data['bar']['Number of Customers']):,}",
-            f"{proper_round(bar_retail_data['retail']['Number of Customers']):,}"
+        '# of Customers': [
+            f"{proper_round(bar_retail_data['bar']['# of Customers']):,}",
+            f"{proper_round(bar_retail_data['retail']['# of Customers']):,}",
+            f"{proper_round(kpis_main['# of Customers']):,}"
         ],
         'Avg Transaction': [
-            f"${kpis_main['Avg Transaction']:.2f}",
             f"${bar_retail_data['bar']['Avg Transaction']:.2f}",
-            f"${bar_retail_data['retail']['Avg Transaction']:.2f}"
+            f"${bar_retail_data['retail']['Avg Transaction']:.2f}",
+            f"${kpis_main['Avg Transaction']:.2f}"
         ],
         '3M Avg': [
-            f"${proper_round(kpis_main['3M Avg']):,}",
             f"${proper_round(bar_retail_data['bar']['3M Avg']):,}",
-            f"${proper_round(bar_retail_data['retail']['3M Avg']):,}"
+            f"${proper_round(bar_retail_data['retail']['3M Avg']):,}",
+            f"${proper_round(kpis_main['3M Avg']):,}"
         ],
         '6M Avg': [
-            f"${proper_round(kpis_main['6M Avg']):,}",
             f"${proper_round(bar_retail_data['bar']['6M Avg']):,}",
-            f"${proper_round(bar_retail_data['retail']['6M Avg']):,}"
+            f"${proper_round(bar_retail_data['retail']['6M Avg']):,}",
+            f"${proper_round(kpis_main['6M Avg']):,}"
         ],
         'Items Sold': [
-            f"{proper_round(kpis_main['Items Sold']):,}",
             f"{proper_round(bar_retail_data['bar']['Items Sold']):,}",
-            f"{proper_round(bar_retail_data['retail']['Items Sold']):,}"
+            f"{proper_round(bar_retail_data['retail']['Items Sold']):,}",
+            f"{proper_round(kpis_main['Items Sold']):,}"
         ],
         'Inventory Value': [
-            f"${proper_round(inv_value_latest):,} (as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'})",
-            "-",
-            "-"
+            "-", "-",
+            f"${proper_round(inv_value_latest):,} (as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'})"
         ]
+
     }
 
     df_summary = pd.DataFrame(summary_data)
 
     # 设置列配置
     column_config = {
-        '': st.column_config.Column(width="110px"),
-        'Daily Net Sales': st.column_config.Column(width="130px"),
-        'Daily Transactions': st.column_config.Column(width="140px"),
-        'Number of Customers': st.column_config.Column(width="140px"),
-        'Avg Transaction': st.column_config.Column(width="125px"),
-        '3M Avg': st.column_config.Column(width="115px"),
-        '6M Avg': st.column_config.Column(width="115px"),
-        'Items Sold': st.column_config.Column(width="115px"),
-        'Inventory Value': st.column_config.Column(width="180px")  # 稍微增加宽度以容纳日期信息
+        '': st.column_config.Column(width=80),
+        'Daily Net Sales': st.column_config.Column(width=100),
+        'Daily Transactions': st.column_config.Column(width=120),
+        '# of Customers': st.column_config.Column(width=100),
+        'Avg Transaction': st.column_config.Column(width=105),
+        '3M Avg': st.column_config.Column(width=55),
+        '6M Avg': st.column_config.Column(width=55),
+        'Items Sold': st.column_config.Column(width=75),
+        'Inventory Value': st.column_config.Column(width=105),
     }
-
     # 显示表格
     st.markdown("<h4 style='font-size:16px; font-weight:700; margin-top:1rem;'>Summary Table</h4>",
                 unsafe_allow_html=True)
@@ -949,14 +947,14 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # === 四个多选框一行显示（使用 columns，等宽且靠左） ===
 
     # 定义每个框的宽度比例
-    col1, col2, col3, col4, _ = st.columns([1.3, 1.3, 1.3, 1.3, 1.8])
+    col1, col2, col3, col4, _ = st.columns([1.0, 1.2, 0.7, 1.5, 2.6])
 
     with col1:
         time_range = persisting_multiselect(
             "Choose time range",
             ["Custom dates", "WTD", "MTD", "YTD"],
             key="hl_time",
-            width_chars=24
+            width_chars=15
         )
 
     with col2:
@@ -964,7 +962,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             "Choose data types",
             ["Daily Net Sales", "Daily Transactions", "Avg Transaction", "Items Sold", "Inventory Value"],
             key="hl_data_base",
-            width_chars=24
+            width_chars=22
         )
 
     with col3:
@@ -972,7 +970,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             "Choose averages",
             ["3M Avg", "6M Avg"],
             key="hl_data_avg",
-            width_chars=24
+            width_chars=6
         )
 
     with col4:
@@ -980,7 +978,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
             "Choose categories",
             all_cats_extended,
             key="hl_cats",
-            width_chars=24
+            width_chars=30
         )
 
     # 加一小段 CSS，让四个框左对齐、间距最小
@@ -990,8 +988,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         padding: 0 4px !important;
     }
     div[data-baseweb="select"] {
-        min-width: 20ch !important;
-        max-width: 30ch !important;
+        min-width: 5ch !important;
+        max-width: 35ch !important;
     }
     </style>
     """, unsafe_allow_html=True)
