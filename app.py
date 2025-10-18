@@ -14,6 +14,12 @@ import subprocess
 import sys
 from services.ingestion import ingest_from_drive_all
 
+st.set_page_config(
+    page_title="Vie Manly Analytics",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
+
 # 关闭文件监控，避免 Streamlit Cloud 报 inotify 错误
 os.environ["WATCHDOG_DISABLE_FILE_WATCH"] = "true"
 
