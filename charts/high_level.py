@@ -4,6 +4,7 @@ import plotly.express as px
 import math
 import numpy as np
 from services.db import get_db
+
 # === 添加页面配置 - 修复布局不一致问题 ===
 st.set_page_config(
     page_title="Vie Manly Dashboard",
@@ -11,6 +12,8 @@ st.set_page_config(
     initial_sidebar_state="auto",
     menu_items=None
 )
+
+
 def _safe_sum(df, col):
     if df is None or df.empty or col not in df.columns:
         return 0.0
@@ -260,10 +263,15 @@ def preload_all_data():
     return daily, category
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=50, show_spinner=False)
 def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_sel, cats_sel,
                             custom_dates_selected=False, t1=None, t2=None):
-    """快速准备图表数据"""
+    """快速准备图表数据 - 优化缓存稳定性"""
+    # 稳定缓存键 - 对列表参数排序确保缓存键一致
+    time_range = sorted(time_range) if time_range else []
+    data_sel = sorted(data_sel) if data_sel else []
+    cats_sel = sorted(cats_sel) if cats_sel else []
+
     if not time_range or not data_sel or not cats_sel:
         return None
 
