@@ -916,6 +916,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         )
 
         # Retail分类商品项选择 - 使用与 high_level.py 相同的多选框样式
+        # Retail分类商品项选择 - 两级搜索优化（三列布局）
         st.markdown("<h4 style='font-size:16px; font-weight:700;'>📦 Retail Category Items</h4>", unsafe_allow_html=True)
 
         # 获取所有Retail分类的商品项
@@ -925,8 +926,9 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             retail_items_df["clean_item"] = retail_items_df["Item"].apply(clean_item_name_for_comments)
             retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
 
-            # 选择Retail分类和商品项 - 放在同一行
-            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 2.2, 1.3, 2.3])
+            # 三个多选框放在同一行
+            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.2, 1.8,2.8])
+
             with col_retail1:
                 selected_retail_categories = persisting_multiselect_with_width(
                     "Select Retail Categories",
@@ -934,12 +936,43 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     key="retail_categories_select",
                     width_chars=22
                 )
+
             with col_retail2:
+                # 搜索关键词输入框 - 添加宽度设置
+                st.markdown("""
+                <style>
+                div[data-testid*="retail_search_term"] {
+                    width: 25ch !important;
+                    min-width: 25ch !important;
+                }
+                div[data-testid*="retail_search_term"] input {
+                    width: 25ch !important;
+                    min-width: 25ch !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
+                search_term = st.text_input(
+                    "🔍 Search items",
+                    placeholder="honey, tea, coffee...",
+                    key="retail_search_term"
+                )
+
+            with col_retail3:
+                # 根据搜索词过滤选项
+                if search_term:
+                    search_lower = search_term.lower()
+                    filtered_options = [item for item in retail_item_options if search_lower in item.lower()]
+                    item_count_text = f"{len(filtered_options)} items"
+                else:
+                    filtered_options = retail_item_options
+                    item_count_text = f"All {len(retail_item_options)} items"
+
                 selected_retail_items = persisting_multiselect_with_width(
-                    "Select Items from Retail Categories",
-                    options=retail_item_options,
+                    f"Select Items ({item_count_text})",
+                    options=filtered_options,
                     key="retail_items_select",
-                    width_chars=45
+                    width_chars=35
                 )
 
             # 显示选中的商品项数据
