@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import math
 from services.db import get_db
 
+
 def proper_round(x):
     """标准的四舍五入方法，0.5总是向上舍入"""
     if pd.isna(x):
@@ -263,7 +264,7 @@ def extract_brand_name(item_name):
     # 按空格或连字符等分割
     tokens = re.split(r"[ \t\-_/]+", cleaned)
 
-    # 取第一个“看起来像品牌”的 token：
+    # 取第一个"看起来像品牌"的 token：
     # - 至少含字母
     # - 非纯数字
     for tok in tokens:
@@ -733,12 +734,20 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_daily_sales = bar_df["Sum of Daily Sales"].sum()
         total_per_day = bar_df["Per day"].sum()
 
+        # 计算Total行的Weekly change - 基于总销售额与前一周期的对比
+        total_prior_sales = bar_df["prior_daily_sales"].sum()
+        MIN_BASE = 50
+        if total_prior_sales > MIN_BASE:
+            total_weekly_change = (total_daily_sales - total_prior_sales) / total_prior_sales
+        else:
+            total_weekly_change = np.nan
+
         # 创建数据框（与high_level.py相同的格式）
         bar_summary_data = {
             'Row Labels': bar_df["Row Labels"].tolist() + ["Total"],
             'Sum of Items Sold': bar_df["Sum of Items Sold"].tolist() + [total_items_sold],
             'Sum of Daily Sales': [f"${x:,.0f}" for x in bar_df["Sum of Daily Sales"]] + [f"${total_daily_sales:,.0f}"],
-            'Weekly change': bar_df["Weekly change"].tolist() + [""],
+            'Weekly change': bar_df["Weekly change"].tolist() + [format_change(total_weekly_change)],
             'Per day': bar_df["Per day"].tolist() + [total_per_day],
             'Comments': bar_df["Comments"].tolist() + [bar_total_top_items]
         }
@@ -884,13 +893,21 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_daily_sales = retail_df["Sum of Daily Sales"].sum()
         total_per_day = retail_df["Per day"].sum()
 
+        # 计算Total行的Weekly change - 基于总销售额与前一周期的对比
+        total_prior_sales = retail_df["prior_daily_sales"].sum()
+        MIN_BASE = 50
+        if total_prior_sales > MIN_BASE:
+            total_weekly_change = (total_daily_sales - total_prior_sales) / total_prior_sales
+        else:
+            total_weekly_change = np.nan
+
         # 创建数据框（与high_level.py相同的格式）
         retail_summary_data = {
             'Row Labels': retail_df["Row Labels"].tolist() + ["Total"],
             'Sum of Items Sold': retail_df["Sum of Items Sold"].tolist() + [total_items_sold],
             'Sum of Daily Sales': [f"${x:,.0f}" for x in retail_df["Sum of Daily Sales"]] + [
                 f"${total_daily_sales:,.0f}"],
-            'Weekly change': retail_df["Weekly change"].tolist() + [""],
+            'Weekly change': retail_df["Weekly change"].tolist() + [format_change(total_weekly_change)],
             'Per day': retail_df["Per day"].tolist() + [total_per_day],
             'Comments': retail_df["Comments"].tolist() + [retail_total_top_items]
         }
@@ -927,7 +944,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
 
             # 三个多选框放在同一行
-            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.2, 1.8,2.8])
+            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.2, 1.8, 2.8])
 
             with col_retail1:
                 selected_retail_categories = persisting_multiselect_with_width(
