@@ -675,7 +675,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         </style>
         """, unsafe_allow_html=True)
 
-        selected_date_formatted = st.selectbox("Choose a specific date to view data", available_dates_formatted)
+        selected_date_formatted = st.selectbox("Choose date", available_dates_formatted)
 
         # 将选择的日期转换回日期对象
         selected_date = pd.to_datetime(selected_date_formatted, format='%d/%m/%Y').date()
@@ -845,6 +845,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # === 新增：Summary Table列宽配置 ===
     column_widths = {
         "label": "110px",
+        "Percentage": "80px",
         "Daily Net Sales": "130px",
         "Daily Transactions": "140px",
         "# of Customers": "140px",
@@ -858,6 +859,13 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # 创建数据框
     summary_data = {
         '': ['Bar', 'Retail', 'Total'],
+        'Percentage': [
+            f"{(bar_retail_data['bar']['Daily Net Sales'] / kpis_main['Daily Net Sales'] * 100):.2f}%" if kpis_main[
+                                                                                                              'Daily Net Sales'] > 0 else "0.00%",
+            f"{(bar_retail_data['retail']['Daily Net Sales'] / kpis_main['Daily Net Sales'] * 100):.2f}%" if kpis_main[
+                                                                                                                 'Daily Net Sales'] > 0 else "0.00%",
+            "-"
+        ],
         'Daily Net Sales': [
             f"${proper_round(bar_retail_data['bar']['Daily Net Sales']):,}",
             f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}",
@@ -905,6 +913,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     # 设置列配置
     column_config = {
         '': st.column_config.Column(width=80),
+        'Percentage': st.column_config.Column(width=80),
         'Daily Net Sales': st.column_config.Column(width=100),
         'Daily Transactions': st.column_config.Column(width=120),
         '# of Customers': st.column_config.Column(width=100),
