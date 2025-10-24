@@ -153,8 +153,15 @@ def preprocess_inventory(df: pd.DataFrame, filename: str = None) -> pd.DataFrame
 
     # 过滤掉Current Quantity Vie Market & Bar或者Default Unit Cost为空的行
     if "Current Quantity Vie Market & Bar" in df.columns and "Default Unit Cost" in df.columns:
-        mask = (~df["Current Quantity Vie Market & Bar"].isna()) & (~df["Default Unit Cost"].isna())
-        df = df[mask].copy()
+        for col in ["Price", "Current Quantity Vie Market & Bar", "Default Unit Cost"]:
+            if col not in df.columns:
+                df[col] = None
+            df[col] = (
+                df[col].astype(str)
+                .str.replace(r"[^0-9\.\-]", "", regex=True)
+                .replace("", pd.NA)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     if filename:
         df["source_date"] = _extract_date_from_filename(filename)
@@ -204,6 +211,33 @@ def _ensure_table_schema(conn, table: str, df: pd.DataFrame, prefer_real: set):
 
 
 def _deduplicate(df: pd.DataFrame, key_col: str, conn, table: str) -> pd.DataFrame:
+    """
+    默认仍旧按单列 key_col 去重；
+    但对 inventory 表，如果同时具备 source_date+SKU，则按 (source_date, SKU) 复合键去重。
+    """
+    if df is None or df.empty:
+        return df
+
+    # ✅ inventory：使用 (source_date, SKU) 去重，避免跨天误伤
+    if table == "inventory" and "source_date" in df.columns and "SKU" in df.columns:
+        try:
+            exist = pd.read_sql('SELECT source_date, SKU FROM "inventory"', conn)
+            # 统一成字符串键，避免 NaT/NaN 对比问题
+            exist["source_date"] = pd.to_datetime(exist["source_date"], errors="coerce").dt.date.astype(str)
+            exist["SKU"] = exist["SKU"].astype(str)
+            existed_keys = set((exist["source_date"] + "||" + exist["SKU"]).unique())
+
+            df_local = df.copy()
+            df_local["source_date"] = pd.to_datetime(df_local["source_date"], errors="coerce").dt.date.astype(str)
+            df_local["SKU"] = df_local["SKU"].astype(str)
+            keys = df_local["source_date"] + "||" + df_local["SKU"]
+            mask = ~keys.isin(existed_keys)
+            return df_local[mask]
+        except Exception:
+            # 读库失败时，不做去重，尽量不中断导入
+            return df
+
+    # 其它表/场景：保持原单键去重逻辑
     if key_col not in df.columns:
         return df
     try:
@@ -213,6 +247,7 @@ def _deduplicate(df: pd.DataFrame, key_col: str, conn, table: str) -> pd.DataFra
         return df[mask]
     except Exception:
         return df
+
 
 
 def _write_df(conn, df: pd.DataFrame, table: str, key_candidates: list, prefer_real: set):
@@ -406,8 +441,6 @@ def ingest_csv(uploaded_file):
 
 def ingest_excel(uploaded_file):
     conn = get_db()
-
-    # 确保表存在
     ensure_indexes()
 
     filename = uploaded_file.name if hasattr(uploaded_file, "name") else "uploaded.xlsx"
@@ -419,41 +452,64 @@ def ingest_excel(uploaded_file):
 
         total_rows_imported = 0
 
-        for sheet in xls.sheet_names:
-            header_row = 1 if ("catalogue" in filename.lower()) else 0
-            df = pd.read_excel(xls, sheet_name=sheet, header=header_row)
-            df = _fix_header(df)
+        is_catalogue = ("catalogue" in filename.lower())
+        # 只处理 Items/首个 sheet（库存）
+        if is_catalogue:
+            target_sheets = []
+            if "Items" in xls.sheet_names:
+                target_sheets = ["Items"]
+            else:
+                # 回退：找第一个 sheet
+                target_sheets = [xls.sheet_names[0]]
 
-            if "Net Sales" in df.columns and "Gross Sales" in df.columns:
-                df = preprocess_transactions(df)
-                _write_df(conn, df, "transactions",
-                          key_candidates=["Transaction ID"],
-                          prefer_real={"Net Sales", "Gross Sales", "Qty", "Discounts"})
-                total_rows_imported += len(df)
+            inv_frames = []
+            for sheet in target_sheets:
+                df = pd.read_excel(xls, sheet_name=sheet, header=1)
+                df = _fix_header(df)
+                if ("SKU" in df.columns) or ("Stock on Hand" in df.columns) or ("Categories" in df.columns):
+                    df = preprocess_inventory(df, filename=filename)
+                    inv_frames.append(df)
 
-            elif "SKU" in df.columns or "Stock on Hand" in df.columns or "Categories" in df.columns:
-                df = preprocess_inventory(df, filename=filename)
-                _write_df(conn, df, "inventory",
+            if inv_frames:
+                inv_all = pd.concat(inv_frames, ignore_index=True)
+                _write_df(conn, inv_all, "inventory",
                           key_candidates=["SKU"], prefer_real=set())
-                total_rows_imported += len(df)
+                total_rows_imported += len(inv_all)
+        else:
+            # 非 catalogue 的 Excel：保留原逻辑（逐 sheet 导入）
+            for sheet in xls.sheet_names:
+                header_row = 0
+                df = pd.read_excel(xls, sheet_name=sheet, header=header_row)
+                df = _fix_header(df)
 
-            elif "Square Customer ID" in df.columns or "First Name" in df.columns or "member" in filename.lower():
-                df = preprocess_members(df)
-                _write_df(conn, df, "members",
-                          key_candidates=["Square Customer ID", "Reference ID"], prefer_real=set())
-                total_rows_imported += len(df)
+                if "Net Sales" in df.columns and "Gross Sales" in df.columns:
+                    df = preprocess_transactions(df)
+                    _write_df(conn, df, "transactions",
+                              key_candidates=["Transaction ID"],
+                              prefer_real={"Net Sales", "Gross Sales", "Qty", "Discounts"})
+                    total_rows_imported += len(df)
+
+                elif "SKU" in df.columns or "Stock on Hand" in df.columns or "Categories" in df.columns:
+                    df = preprocess_inventory(df, filename=filename)
+                    _write_df(conn, df, "inventory",
+                              key_candidates=["SKU"], prefer_real=set())
+                    total_rows_imported += len(df)
+
+                elif "Square Customer ID" in df.columns or "First Name" in df.columns or "member" in filename.lower():
+                    df = preprocess_members(df)
+                    _write_df(conn, df, "members",
+                              key_candidates=["Square Customer ID", "Reference ID"], prefer_real=set())
+                    total_rows_imported += len(df)
 
         st.sidebar.success(f"✅ {filename} imported - {total_rows_imported} total rows")
 
-        # 上传到 Google Drive
+        # 上传到 Drive（保持原逻辑）
         tmp_path = os.path.join(tempfile.gettempdir(), filename)
         with open(tmp_path, "wb") as f_local:
             f_local.write(data)
         upload_file_to_drive(tmp_path, filename)
 
-        # 确保索引创建
         ensure_indexes()
-
         return True
 
     except Exception as e:
