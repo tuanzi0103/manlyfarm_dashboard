@@ -350,30 +350,33 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
 
         parts_tx.append(small_cats_data)
 
-    # 处理bar分类 - 重新计算bar的滚动平均
+    # 处理bar分类 - 重新计算bar的滚动平均（改为使用pure net sale）
     if "bar" in cats_sel:
         bar_tx = grouped_tx[grouped_tx["Category"].isin(bar_cats)].copy()
         if not bar_tx.empty:
-            # 先按日期聚合bar数据
+            # 改为使用 net_sales 列（纯净净销售额）
             bar_daily_agg = bar_tx.groupby("date").agg({
-                "net_sales_with_tax": "sum",
+                "net_sales": "sum",
                 "transactions": "sum",
                 "qty": "sum",
-                "3M_Avg_Rolling": "mean",  # 保留原有的滚动平均值
-                "6M_Avg_Rolling": "mean"  # 保留原有的滚动平均值
+                "3M_Avg_Rolling": "mean",
+                "6M_Avg_Rolling": "mean"
             }).reset_index()
+
+            # 同时把新列名统一为 net_sales_with_tax，以兼容下游绘图逻辑
+            bar_daily_agg["net_sales_with_tax"] = bar_daily_agg["net_sales"]
 
             # 计算bar的平均交易额
             bar_daily_agg["avg_txn"] = bar_daily_agg.apply(
-                lambda x: x["net_sales_with_tax"] / x["transactions"] if x["transactions"] > 0 else 0,
+                lambda x: x["net_sales"] / x["transactions"] if x["transactions"] > 0 else 0,
                 axis=1
             )
 
-            # 为bar数据计算准确的滚动平均（如果需要重新计算）
-            bar_daily_agg["3M_Avg_Rolling"] = bar_daily_agg["net_sales_with_tax"].rolling(window=90, min_periods=1,
-                                                                                          center=False).mean()
-            bar_daily_agg["6M_Avg_Rolling"] = bar_daily_agg["net_sales_with_tax"].rolling(window=180, min_periods=1,
-                                                                                          center=False).mean()
+            # 为bar数据计算准确的滚动平均（基于纯净净销售额）
+            bar_daily_agg["3M_Avg_Rolling"] = bar_daily_agg["net_sales"].rolling(window=90, min_periods=1,
+                                                                                 center=False).mean()
+            bar_daily_agg["6M_Avg_Rolling"] = bar_daily_agg["net_sales"].rolling(window=180, min_periods=1,
+                                                                                 center=False).mean()
 
             bar_daily_agg["Category"] = "bar"
             parts_tx.append(bar_daily_agg)
@@ -730,7 +733,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
         # 计算bar数据
         bar_data = daily_category_data[daily_category_data["Category"].isin(bar_cats)]
-        bar_net_sales = proper_round(bar_data["net_sales_with_tax"].sum())
+        bar_net_sales = proper_round(bar_data["net_sales"].sum())
         bar_transactions = bar_data["transactions"].sum()
         bar_avg_txn = bar_net_sales / bar_transactions if bar_transactions > 0 else 0
         bar_qty = bar_data["qty"].sum()

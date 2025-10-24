@@ -663,11 +663,11 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             summary["prior_daily_sales"] = 0
 
         # === 修改：修正weekly_change计算逻辑 ===
-        # 新逻辑：(当前周销售额 - 前一周销售额) / 前一周销售额
+        # 新逻辑：(当前周销售额 - 前一周销售额) / 前一周销售额 * 100
         MIN_BASE = 50
         summary["weekly_change"] = np.where(
             summary["prior_daily_sales"] > MIN_BASE,
-            (summary["daily_sales"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"],
+            (summary["daily_sales"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"] * 100,  # 乘以100
             np.nan
         )
 
@@ -722,7 +722,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             "weekly_change": "Weekly change",
             "per_day": "Per day"
         })
-        bar_df["Weekly change"] = bar_df["Weekly change"].apply(format_change)
+
         bar_df = bar_df.sort_values("Sum of Daily Sales", ascending=False)
         # 创建总计行
         total_items_sold = bar_df["Sum of Items Sold"].sum()
@@ -733,7 +733,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_prior_sales = bar_df["prior_daily_sales"].sum()
         MIN_BASE = 50
         if total_prior_sales > MIN_BASE:
-            total_weekly_change = (total_daily_sales - total_prior_sales) / total_prior_sales
+            total_weekly_change = (total_daily_sales - total_prior_sales) / total_prior_sales * 100  # 乘以100
         else:
             total_weekly_change = np.nan
 
@@ -742,24 +742,43 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             'Row Labels': ["Total"] + bar_df["Row Labels"].tolist(),
             'Sum of Items Sold': [total_items_sold] + bar_df["Sum of Items Sold"].tolist(),
             'Sum of Daily Sales': [total_daily_sales] + bar_df["Sum of Daily Sales"].tolist(),
-            'Weekly change': [format_change(total_weekly_change)] + bar_df["Weekly change"].tolist(),
+            'Weekly change': [total_weekly_change] + bar_df["Weekly change"].tolist(),
             'Per day': [total_per_day] + bar_df["Per day"].tolist(),
             'Comments': [bar_total_top_items] + bar_df["Comments"].tolist()
         }
 
         df_bar_summary = pd.DataFrame(bar_summary_data)
 
-        # 显示表格（使用与high_level.py相同的格式）
+        # === 修正：直接按照Weekly change数值从小到大排序 ===
+        # 先分离Total行和其他行
+        total_row = df_bar_summary[df_bar_summary['Row Labels'] == 'Total']
+        other_rows = df_bar_summary[df_bar_summary['Row Labels'] != 'Total']
+
+        # === 修正：按 Weekly change 数值从小到大排序（空值放最后）
+        other_rows_sorted = other_rows.sort_values(
+            by='Weekly change',
+            key=lambda x: pd.to_numeric(x, errors='coerce'),
+            ascending=True,
+            na_position='last'
+        )
+
+        # Total 行始终放在最上方
+        df_bar_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
+
+        # === 不再创建字符串列，直接保留数值 ===
         st.dataframe(
-            df_bar_summary,
+            df_bar_summary_sorted[['Row Labels', 'Sum of Items Sold', 'Sum of Daily Sales',
+                                   'Per day', 'Comments', 'Weekly change']],
             column_config={
                 'Row Labels': st.column_config.Column(width="150px"),
                 'Sum of Items Sold': st.column_config.Column(width="130px"),
-                'Sum of Daily Sales': st.column_config.NumberColumn(
-                    width="140px",
-                    format="$%d"
+                'Sum of Daily Sales': st.column_config.NumberColumn(width="140px", format="$%d"),
+                # ✅ 改成数值列，自动支持点击 header 正确排序
+                'Weekly change': st.column_config.NumberColumn(
+                    width="120px",
+                    label="Weekly change",
+                    format="%.2f%%"  # 自动加上百分号
                 ),
-                'Weekly change': st.column_config.Column(width="120px"),
                 'Per day': st.column_config.Column(width="100px"),
                 'Comments': st.column_config.Column(width="100px")
             },
@@ -891,7 +910,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             "weekly_change": "Weekly change",
             "per_day": "Per day"
         })
-        retail_df["Weekly change"] = retail_df["Weekly change"].apply(format_change)
+
         retail_df = retail_df.sort_values("Sum of Daily Sales", ascending=False)
 
         # 创建总计行
@@ -900,7 +919,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_prior_sales_raw = retail_df["prior_daily_sales"].sum()
         MIN_BASE = 50
         if total_prior_sales_raw > MIN_BASE:
-            total_weekly_change = (total_daily_sales_raw - total_prior_sales_raw) / total_prior_sales_raw
+            total_weekly_change = (total_daily_sales_raw - total_prior_sales_raw) / total_prior_sales_raw * 100  # 乘以100
         else:
             total_weekly_change = np.nan
 
@@ -914,16 +933,32 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             'Row Labels': ["Total"] + retail_df["Row Labels"].tolist(),
             'Sum of Items Sold': [total_items_sold] + retail_df["Sum of Items Sold"].tolist(),
             'Sum of Daily Sales': [total_daily_sales] + retail_df["Sum of Daily Sales"].tolist(),
-            'Weekly change': [format_change(total_weekly_change)] + retail_df["Weekly change"].tolist(),
+            'Weekly change': [total_weekly_change] + retail_df["Weekly change"].tolist(),
             'Per day': [total_per_day] + retail_df["Per day"].tolist(),
             'Comments': [retail_total_top_items] + retail_df["Comments"].tolist()
         }
 
         df_retail_summary = pd.DataFrame(retail_summary_data)
 
-        # 显示表格（使用与high_level.py相同的格式）
+        # === 修正：直接按照Weekly change数值从小到大排序 ===
+        # 先分离Total行和其他行
+        total_row = df_retail_summary[df_retail_summary['Row Labels'] == 'Total']
+        other_rows = df_retail_summary[df_retail_summary['Row Labels'] != 'Total']
+
+        # === 修正：按 Weekly change 数值从小到大排序（空值放最后）
+        other_rows_sorted = other_rows.sort_values(
+            by='Weekly change',
+            key=lambda x: pd.to_numeric(x, errors='coerce'),
+            ascending=True,
+            na_position='last'
+        )
+
+        # Total 行始终放在最上方
+        df_retail_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
+
         st.dataframe(
-            df_retail_summary,
+            df_retail_summary_sorted[['Row Labels', 'Sum of Items Sold', 'Sum of Daily Sales',
+                                      'Per day', 'Comments', 'Weekly change']],
             column_config={
                 'Row Labels': st.column_config.Column(width="150px"),
                 'Sum of Items Sold': st.column_config.Column(width="130px"),
@@ -931,7 +966,12 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     width="140px",
                     format="$%d"
                 ),
-                'Weekly change': st.column_config.Column(width="120px"),
+                # ✅ Weekly change 保持 float，不转字符串，自动格式化百分比
+                'Weekly change': st.column_config.NumberColumn(
+                    width="120px",
+                    label="Weekly change",
+                    format="%.2f%%"
+                ),
                 'Per day': st.column_config.Column(width="100px"),
                 'Comments': st.column_config.Column(width="100px")
             },

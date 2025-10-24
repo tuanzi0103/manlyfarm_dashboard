@@ -125,9 +125,10 @@ def calculate_inventory_summary(inv_df):
 
     df = inv_df.copy()
 
-    # 1. 过滤掉负数和0的库存
+    # 1. 过滤掉负数、0、空值的库存和成本
     df["Quantity"] = pd.to_numeric(df["Current Quantity Vie Market & Bar"], errors="coerce")
-    df = df[df["Quantity"] > 0].copy()
+    df["UnitCost"] = pd.to_numeric(df["Default Unit Cost"], errors="coerce")
+    df = df[(df["Quantity"] > 0) & (df["UnitCost"] > 0)].copy()
 
     if df.empty:
         return {
@@ -163,6 +164,7 @@ def calculate_inventory_summary(inv_df):
     total_inventory_value = round(total_inventory_value)
     total_retail_value = round(total_retail_value)
     profit = round(profit)
+    total_inventory_value = int(total_inventory_value)
 
     return {
         "Total Inventory Value": total_inventory_value,
@@ -399,12 +401,34 @@ def show_inventory(tx, inventory: pd.DataFrame):
             display_df["Profit Margin"] = (display_df["Profit"] / display_df["Total Retail"] * 100).fillna(0)
             display_df["Profit Margin"] = display_df["Profit Margin"].map(lambda x: f"{x:.1f}%")
 
-            # 计算 Velocity (使用当前月份的 Net Sales)
-            current_month_sales = tx["Net Sales"].sum()
-            display_df["Velocity"] = current_month_sales / display_df["Total Retail"]
+            # 计算过去4周的Net Sales
+            selected_date_ts = pd.Timestamp(selected_date)
 
-            # Velocity 四舍五入保留一位小数
-            display_df["Velocity"] = display_df["Velocity"].round(1)
+            # === 新逻辑：按 Item Name 连接 transaction 表 ===
+            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
+            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
+            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
+
+            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
+            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
+
+            item_sales_4w = (
+                recent_tx.groupby("Item")["Net Sales"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
+            )
+
+            display_df = display_df.merge(item_sales_4w, on="Item Name", how="left")
+            display_df["Velocity"] = display_df.apply(
+                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
+                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
+                else "-",
+                axis=1
+            )
+
+            vel_numeric = pd.to_numeric(display_df["Velocity"], errors="coerce")
+            display_df["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), display_df["Velocity"])
 
             # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
             display_df = display_df.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
@@ -418,8 +442,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 display_columns.append("Item Name")
             if "Item Variation Name" in display_df.columns:
                 display_columns.append("Item Variation Name")
-            if "GTIN" in display_df.columns:
-                display_columns.append("GTIN")
             if "SKU" in display_df.columns:
                 display_columns.append("SKU")
 
@@ -452,7 +474,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-                'GTIN': st.column_config.Column(width=50),
+
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
                 'Total Inventory': st.column_config.Column(width=100),
@@ -537,9 +559,33 @@ def show_inventory(tx, inventory: pd.DataFrame):
     else:
         inv["option_key"] = inv["display_name"]
 
-    # ✅ 修复：补货分析使用 restock_quantity（缺货数量的绝对值）
-    # Items needing restock
-    need_restock = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) < 0].copy()
+    # === 生成补货表 ===
+    need_restock = filtered_inv.copy()
+
+    # ✅ 确保存在 option_key 列
+    if "option_key" not in need_restock.columns:
+        if "Item Name" in need_restock.columns:
+            item_col = "Item Name"
+        else:
+            item_col = "Item"
+        variation_col = "Item Variation Name" if "Item Variation Name" in need_restock.columns else None
+        sku_col = "SKU" if "SKU" in need_restock.columns else None
+
+        if variation_col:
+            need_restock["display_name"] = need_restock[item_col].astype(str) + " - " + need_restock[
+                variation_col].astype(str)
+        else:
+            need_restock["display_name"] = need_restock[item_col].astype(str)
+
+        if sku_col:
+            need_restock["option_key"] = need_restock["display_name"] + " (SKU:" + need_restock[sku_col].astype(
+                str) + ")"
+        else:
+            need_restock["option_key"] = need_restock["display_name"]
+
+    # ✅ 再按库存量筛选需要补货的
+    need_restock = need_restock[pd.to_numeric(need_restock[qty_col], errors="coerce").fillna(0) < 0].copy()
+
     if not need_restock.empty:
         options = sorted(need_restock["option_key"].unique())
 
@@ -623,12 +669,34 @@ def show_inventory(tx, inventory: pd.DataFrame):
                     display_restock["Profit"] / display_restock["Total Retail"] * 100).fillna(0)
             display_restock["Profit Margin"] = display_restock["Profit Margin"].map(lambda x: f"{x:.1f}%")
 
-            # 计算 Velocity (使用当前月份的 Net Sales)
-            current_month_sales = tx["Net Sales"].sum()
-            display_restock["Velocity"] = current_month_sales / display_restock["Total Retail"]
+            # 计算过去4周的Net Sales
+            selected_date_ts = pd.Timestamp(selected_date)
+
+            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
+            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
+            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
+
+            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
+            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
+
+            item_sales_4w = (
+                recent_tx.groupby("Item")["Net Sales"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
+            )
+
+            display_restock = display_restock.merge(item_sales_4w, on="Item Name", how="left")
+            display_restock["Velocity"] = display_restock.apply(
+                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
+                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
+                else "-",
+                axis=1
+            )
 
             # Velocity 四舍五入保留一位小数
-            display_restock["Velocity"] = display_restock["Velocity"].round(1)
+            vel_numeric = pd.to_numeric(display_restock["Velocity"], errors="coerce")
+            display_restock["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), display_restock["Velocity"])
 
             # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
             display_restock = display_restock.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
@@ -642,8 +710,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 display_columns.append("Item Name")
             if "Item Variation Name" in display_restock.columns:
                 display_columns.append("Item Variation Name")
-            if "GTIN" in display_restock.columns:
-                display_columns.append("GTIN")
             if "SKU" in display_restock.columns:
                 display_columns.append("SKU")
 
@@ -678,7 +744,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-                'GTIN': st.column_config.Column(width=50),
+
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
                 'Total Inventory': st.column_config.Column(width=100),
@@ -698,10 +764,33 @@ def show_inventory(tx, inventory: pd.DataFrame):
     else:
         st.success("No items need restocking.")
 
-    # Items needing clearance
     clear_threshold = 50
-    # ✅ 修复：清仓分析使用实际库存数量（≥0）
-    need_clear = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0) > clear_threshold].copy()
+    # === 生成需要清仓表（high stock items） ===
+    need_clear = filtered_inv.copy()
+
+    # ✅ 确保存在 option_key 列
+    if "option_key" not in need_clear.columns:
+        if "Item Name" in need_clear.columns:
+            item_col = "Item Name"
+        else:
+            item_col = "Item"
+        variation_col = "Item Variation Name" if "Item Variation Name" in need_clear.columns else None
+        sku_col = "SKU" if "SKU" in need_clear.columns else None
+
+        if variation_col:
+            need_clear["display_name"] = need_clear[item_col].astype(str) + " - " + need_clear[variation_col].astype(
+                str)
+        else:
+            need_clear["display_name"] = need_clear[item_col].astype(str)
+
+        if sku_col:
+            need_clear["option_key"] = need_clear["display_name"] + " (SKU:" + need_clear[sku_col].astype(str) + ")"
+        else:
+            need_clear["option_key"] = need_clear["display_name"]
+
+    # ✅ 过滤大库存行（例如超过 clear_threshold）
+    need_clear = need_clear[pd.to_numeric(need_clear[qty_col], errors="coerce").fillna(0) >= clear_threshold].copy()
+
     if not need_clear.empty:
         options = sorted(need_clear["option_key"].unique())
 
@@ -792,12 +881,33 @@ def show_inventory(tx, inventory: pd.DataFrame):
                     df_clear_display["Profit"] / df_clear_display["Total Retail"] * 100).fillna(0)
             df_clear_display["Profit Margin"] = df_clear_display["Profit Margin"].map(lambda x: f"{x:.1f}%")
 
-            # 计算 Velocity (使用当前月份的 Net Sales)
-            current_month_sales = tx["Net Sales"].sum()
-            df_clear_display["Velocity"] = current_month_sales / df_clear_display["Total Retail"]
+            # 计算过去4周的Net Sales
+            selected_date_ts = pd.Timestamp(selected_date)
 
-            # Velocity 四舍五入保留一位小数
-            df_clear_display["Velocity"] = df_clear_display["Velocity"].round(1)
+            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
+            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
+            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
+
+            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
+            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
+
+            item_sales_4w = (
+                recent_tx.groupby("Item")["Net Sales"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
+            )
+
+            df_clear_display = df_clear_display.merge(item_sales_4w, on="Item Name", how="left")
+            df_clear_display["Velocity"] = df_clear_display.apply(
+                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
+                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
+                else "-",
+                axis=1
+            )
+
+            vel_numeric = pd.to_numeric(df_clear_display["Velocity"], errors="coerce")
+            df_clear_display["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), df_clear_display["Velocity"])
 
             # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
             df_clear_display = df_clear_display.rename(
@@ -812,8 +922,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 display_columns.append("Item Name")
             if "Item Variation Name" in df_clear_display.columns:
                 display_columns.append("Item Variation Name")
-            if "GTIN" in df_clear_display.columns:
-                display_columns.append("GTIN")
             if "SKU" in df_clear_display.columns:
                 display_columns.append("SKU")
 
@@ -847,7 +955,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-                'GTIN': st.column_config.Column(width=50),
+
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
                 'Total Inventory': st.column_config.Column(width=100),
@@ -872,8 +980,30 @@ def show_inventory(tx, inventory: pd.DataFrame):
     # ---- 2) Low Stock Alerts ----
     st.markdown("<h3 style='font-size:20px; font-weight:700;'>2) Low Stock Alerts</h3>", unsafe_allow_html=True)
 
-    # ✅ 修复：低库存分析使用实际库存数量（≥0）
-    low_stock = inv[pd.to_numeric(inv[qty_col], errors="coerce").fillna(0).between(1, 20)].copy()
+    # === 生成低库存表 ===
+    low_stock = filtered_inv.copy()
+
+    # ✅ 确保存在 option_key 列
+    if "option_key" not in low_stock.columns:
+        if "Item Name" in low_stock.columns:
+            item_col = "Item Name"
+        else:
+            item_col = "Item"
+        variation_col = "Item Variation Name" if "Item Variation Name" in low_stock.columns else None
+        sku_col = "SKU" if "SKU" in low_stock.columns else None
+
+        if variation_col:
+            low_stock["display_name"] = low_stock[item_col].astype(str) + " - " + low_stock[variation_col].astype(str)
+        else:
+            low_stock["display_name"] = low_stock[item_col].astype(str)
+
+        if sku_col:
+            low_stock["option_key"] = low_stock["display_name"] + " (SKU:" + low_stock[sku_col].astype(str) + ")"
+        else:
+            low_stock["option_key"] = low_stock["display_name"]
+
+    # ✅ 过滤 1–20 单位的低库存行
+    low_stock = low_stock[pd.to_numeric(low_stock[qty_col], errors="coerce").fillna(0).between(1, 20)].copy()
 
     if not low_stock.empty:
         options = sorted(low_stock["option_key"].unique())
@@ -980,12 +1110,35 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 0)
             df_low_display["Profit Margin"] = df_low_display["Profit Margin"].map(lambda x: f"{x:.1f}%")
 
-            # 计算 Velocity (使用当前月份的 Net Sales)
-            current_month_sales = tx["Net Sales"].sum()
-            df_low_display["Velocity"] = current_month_sales / df_low_display["Total Retail"]
+            # 计算过去4周的Net Sales
+            selected_date_ts = pd.Timestamp(selected_date)
+
+            # === 新 Velocity 逻辑：按 Item Name 连接 transaction 表 ===
+            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
+            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
+            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
+
+            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
+            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
+
+            item_sales_4w = (
+                recent_tx.groupby("Item")["Net Sales"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
+            )
+
+            df_low_display = df_low_display.merge(item_sales_4w, on="Item Name", how="left")
+            df_low_display["Velocity"] = df_low_display.apply(
+                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
+                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
+                else "-",
+                axis=1
+            )
 
             # Velocity 四舍五入保留一位小数
-            df_low_display["Velocity"] = df_low_display["Velocity"].round(1)
+            vel_numeric = pd.to_numeric(df_low_display["Velocity"], errors="coerce")
+            df_low_display["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), df_low_display["Velocity"])
 
             # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
             df_low_display = df_low_display.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
@@ -999,8 +1152,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 display_columns.append("Item Name")
             if "Item Variation Name" in df_low_display.columns:
                 display_columns.append("Item Variation Name")
-            if "GTIN" in df_low_display.columns:
-                display_columns.append("GTIN")
             if "SKU" in df_low_display.columns:
                 display_columns.append("SKU")
 
@@ -1033,7 +1184,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-                'GTIN': st.column_config.Column(width=50),
+
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
                 'Total Inventory': st.column_config.Column(width=100),
