@@ -397,9 +397,14 @@ def show_inventory(tx, inventory: pd.DataFrame):
             display_df["Total Retail"] = display_df["Total Retail"].round(2)
             display_df["Profit"] = display_df["Profit"].round(2)
 
-            # 计算 Profit Margin
-            display_df["Profit Margin"] = (display_df["Profit"] / display_df["Total Retail"] * 100).fillna(0)
-            display_df["Profit Margin"] = display_df["Profit Margin"].map(lambda x: f"{x:.1f}%")
+            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
+            def safe_profit_margin(row):
+                if row["Total Retail"] == 0:
+                    return "-"
+                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
+                return f"{profit_margin:.1f}%"
+
+            display_df["Profit Margin"] = display_df.apply(safe_profit_margin, axis=1)
 
             # 计算过去4周的Net Sales
             selected_date_ts = pd.Timestamp(selected_date)
@@ -468,18 +473,18 @@ def show_inventory(tx, inventory: pd.DataFrame):
             # 其他空值用字符 '-' 替换
             for col in display_columns:
                 if col in display_df.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity"]:  # 这些列已经特殊处理过
+                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
                         display_df[col] = display_df[col].fillna('-')
 
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.Column(width=100),
-                'Total Retail': st.column_config.Column(width=80),
-                'Profit': st.column_config.Column(width=50),
+                # === 修复：使用 NumberColumn 确保正确排序 ===
+                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
+                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
+                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
                 'Profit Margin': st.column_config.Column(width=90),
                 'Velocity': st.column_config.Column(width=60),
             }
@@ -664,10 +669,14 @@ def show_inventory(tx, inventory: pd.DataFrame):
             display_restock["Total Retail"] = display_restock["Total Retail"].round(2)
             display_restock["Profit"] = display_restock["Profit"].round(2)
 
-            # 计算 Profit Margin
-            display_restock["Profit Margin"] = (
-                    display_restock["Profit"] / display_restock["Total Retail"] * 100).fillna(0)
-            display_restock["Profit Margin"] = display_restock["Profit Margin"].map(lambda x: f"{x:.1f}%")
+            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
+            def safe_profit_margin(row):
+                if row["Total Retail"] == 0:
+                    return "-"
+                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
+                return f"{profit_margin:.1f}%"
+
+            display_restock["Profit Margin"] = display_restock.apply(safe_profit_margin, axis=1)
 
             # 计算过去4周的Net Sales
             selected_date_ts = pd.Timestamp(selected_date)
@@ -737,19 +746,19 @@ def show_inventory(tx, inventory: pd.DataFrame):
             # 其他空值用字符 '-' 替换
             for col in display_columns:
                 if col in display_restock.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity"]:  # 这些列已经特殊处理过
+                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
                         display_restock[col] = display_restock[col].fillna('-')
 
             # === 修改：设置列宽配置，参考 sales_report 格式 ===
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.Column(width=100),
-                'Total Retail': st.column_config.Column(width=80),
-                'Profit': st.column_config.Column(width=50),
+                # === 修复：使用 NumberColumn 确保正确排序 ===
+                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
+                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
+                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
                 'Profit Margin': st.column_config.Column(width=90),
                 'Velocity': st.column_config.Column(width=60),
             }
@@ -876,10 +885,14 @@ def show_inventory(tx, inventory: pd.DataFrame):
             df_clear_display["Total Retail"] = df_clear_display["Total Retail"].round(2)
             df_clear_display["Profit"] = df_clear_display["Profit"].round(2)
 
-            # 计算 Profit Margin
-            df_clear_display["Profit Margin"] = (
-                    df_clear_display["Profit"] / df_clear_display["Total Retail"] * 100).fillna(0)
-            df_clear_display["Profit Margin"] = df_clear_display["Profit Margin"].map(lambda x: f"{x:.1f}%")
+            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
+            def safe_profit_margin(row):
+                if row["Total Retail"] == 0:
+                    return "-"
+                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
+                return f"{profit_margin:.1f}%"
+
+            df_clear_display["Profit Margin"] = df_clear_display.apply(safe_profit_margin, axis=1)
 
             # 计算过去4周的Net Sales
             selected_date_ts = pd.Timestamp(selected_date)
@@ -949,18 +962,18 @@ def show_inventory(tx, inventory: pd.DataFrame):
             # 其他空值用字符 '-' 替换
             for col in display_columns:
                 if col in df_clear_display.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity"]:  # 这些列已经特殊处理过
+                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
                         df_clear_display[col] = df_clear_display[col].fillna('-')
 
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.Column(width=100),
-                'Total Retail': st.column_config.Column(width=80),
-                'Profit': st.column_config.Column(width=50),
+                # === 修复：使用 NumberColumn 确保正确排序 ===
+                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
+                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
+                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
                 'Profit Margin': st.column_config.Column(width=90),
                 'Velocity': st.column_config.Column(width=60),
             }
@@ -1105,10 +1118,14 @@ def show_inventory(tx, inventory: pd.DataFrame):
             df_low_display["Total Retail"] = df_low_display["Total Retail"].round(2)
             df_low_display["Profit"] = df_low_display["Profit"].round(2)
 
-            # 计算 Profit Margin
-            df_low_display["Profit Margin"] = (df_low_display["Profit"] / df_low_display["Total Retail"] * 100).fillna(
-                0)
-            df_low_display["Profit Margin"] = df_low_display["Profit Margin"].map(lambda x: f"{x:.1f}%")
+            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
+            def safe_profit_margin(row):
+                if row["Total Retail"] == 0:
+                    return "-"
+                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
+                return f"{profit_margin:.1f}%"
+
+            df_low_display["Profit Margin"] = df_low_display.apply(safe_profit_margin, axis=1)
 
             # 计算过去4周的Net Sales
             selected_date_ts = pd.Timestamp(selected_date)
@@ -1178,18 +1195,18 @@ def show_inventory(tx, inventory: pd.DataFrame):
             # 其他空值用字符 '-' 替换
             for col in display_columns:
                 if col in df_low_display.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity"]:  # 这些列已经特殊处理过
+                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
                         df_low_display[col] = df_low_display[col].fillna('-')
 
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
                 'Item Variation Name': st.column_config.Column(width=50),
-
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.Column(width=100),
-                'Total Retail': st.column_config.Column(width=80),
-                'Profit': st.column_config.Column(width=50),
+                # === 修复：使用 NumberColumn 确保正确排序 ===
+                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
+                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
+                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
                 'Profit Margin': st.column_config.Column(width=90),
                 'Velocity': st.column_config.Column(width=60),
             }
