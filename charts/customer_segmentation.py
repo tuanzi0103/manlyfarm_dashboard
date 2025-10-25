@@ -197,12 +197,11 @@ def show_customer_segmentation(tx, members):
     tx = tx.copy()
     members = members.copy()
 
-    # === Restrict analysis to last full week (Mon–Sun before today) ===
-    today = pd.Timestamp.today().normalize()
-    last_sunday = today - pd.to_timedelta(today.weekday() + 1, "D")
-    last_monday = last_sunday - pd.Timedelta(days=6)
+    # === Restrict analysis to last 4 weeks ===
     tx["Datetime"] = pd.to_datetime(tx.get("Datetime", pd.NaT), errors="coerce")
-    tx = tx[(tx["Datetime"] >= last_monday) & (tx["Datetime"] <= last_sunday)]
+    today = pd.Timestamp.today().normalize()
+    four_weeks_ago = today - pd.Timedelta(weeks=4)
+    tx = tx[(tx["Datetime"] >= four_weeks_ago) & (tx["Datetime"] <= today)]
 
     # --- 给交易数据打上 is_member 标记
     df = member_flagged_transactions(tx, members)
@@ -336,17 +335,21 @@ def show_customer_segmentation(tx, members):
     if time_col and "Customer Name" in df.columns:
         t = pd.to_datetime(df[time_col], errors="coerce")
         df["_ts"] = t
+        # === Define last 4 weeks as "last month" ===
         today = pd.Timestamp.today()
-        first_of_this_month = today.replace(day=1)
-        last_month_end = first_of_this_month - pd.Timedelta(days=1)
-        last_month_start = last_month_end.replace(day=1)
+        last_month_end = today
+        last_month_start = today - pd.Timedelta(weeks=4)
 
         # === 按 Customer Name 统计访问频率 ===
         base = df.dropna(subset=["Customer Name"])
         month_key = df["_ts"].dt.to_period("M").rename("month")
         day_key = df["_ts"].dt.date.rename("day")
 
-        per_day = base.groupby(["Customer Name", month_key, day_key]).size().reset_index(name="visits_per_day")
+        per_day = (base.dropna(subset=["Customer Name", "Transaction ID"])
+                   .groupby(["Customer Name", month_key, day_key])["Transaction ID"]
+                   .nunique()
+                   .reset_index(name="visits_per_day"))
+
         per_month = per_day.groupby(["Customer Name", "month"]).size().reset_index(name="visits")
 
         per_month["month_start"] = per_month["month"].dt.to_timestamp()
@@ -359,6 +362,12 @@ def show_customer_segmentation(tx, members):
 
         # ✅ 过滤掉原本就偶尔来的顾客，保留常客
         churn_tag = churn_tag[churn_tag["Average Visit"] >= 2]
+
+        # ✅ 只保留 last_month_visit 为 0 或比平均低的顾客
+        churn_tag = churn_tag[
+            (churn_tag["Last Month Visit"] == 0) |
+            (churn_tag["Last Month Visit"] < churn_tag["Average Visit"])
+            ]
 
         # ✅ 过滤掉 Customer Name 是手机号的记录
         churn_tag = churn_tag[~churn_tag["Customer Name"].apply(is_phone_number)]
@@ -431,8 +440,7 @@ def show_customer_segmentation(tx, members):
 
     if sel_ids:
         chosen = tx[tx["Customer ID"].astype(str).isin(sel_ids)]
-        st.subheader("All transactions for selected customers")
-
+        st.markdown("<h3 style='font-size:20px; font-weight:700;'>All transactions for selected customers</h3>", unsafe_allow_html=True)
         column_config = {
             "Datetime": st.column_config.Column(width=120),
             "Customer Name": st.column_config.Column(width=120),
@@ -444,7 +452,7 @@ def show_customer_segmentation(tx, members):
         }
 
         # ✅ 仅显示指定列（按顺序）
-        display_cols = ["Datetime", "Customer Name", "Customer ID", "Category", "Item", "Qty", "Net Sales"]
+        display_cols = ["Datetime", "Customer Name", "Category", "Item", "Qty", "Net Sales"]
         existing_cols = [c for c in display_cols if c in chosen.columns]
 
         st.dataframe(
@@ -455,12 +463,12 @@ def show_customer_segmentation(tx, members):
         )
 
         if qty_col:
-            # 修改：使用分类而不是具体商品
-            category_col_display = next(
-                (c for c in ["Category", "Item Category", "Product Category"] if c in chosen.columns), None)
+            # 使用具体的 Item 而不是 Category
+            item_col_display = next(
+                (c for c in ["Item", "Item Name", "Variation Name", "SKU Name"] if c in chosen.columns), None)
 
-            if category_col_display:
-                top5 = (chosen.groupby(["Customer ID", "Customer Name", category_col_display])[qty_col].sum()
+            if item_col_display:
+                top5 = (chosen.groupby(["Customer ID", "Customer Name", item_col_display])[qty_col].sum()
                         .reset_index()
                         .sort_values(["Customer Name", qty_col], ascending=[True, False])
                         .groupby("Customer ID").head(5))
@@ -469,15 +477,17 @@ def show_customer_segmentation(tx, members):
                     "<h3 style='font-size:20px; font-weight:700;'>Frequently purchased categories (Top 5 / customer)</h3>",
                     unsafe_allow_html=True)
 
-                # === 修改：设置表格列宽配置，使用分类列 ===
                 column_config = {
-                    'Customer ID': st.column_config.Column(width=150),
                     'Customer Name': st.column_config.Column(width=110),
-                    category_col_display: st.column_config.Column(width=160),
+                    item_col_display: st.column_config.Column(width=160),  # 移除 title 参数
                     qty_col: st.column_config.Column(width=40),
                 }
 
-                st.dataframe(top5, column_config=column_config, use_container_width=False)
+                # 同时修改显示的列，去掉 Customer ID，并重命名列标题
+                display_df = top5[["Customer Name", item_col_display, qty_col]].rename(
+                    columns={item_col_display: "Item"}
+                )
+                st.dataframe(display_df, column_config=column_config, use_container_width=False)
 
             else:
                 # 如果没有分类列，使用商品名称但显示为分类
@@ -498,16 +508,17 @@ def show_customer_segmentation(tx, members):
                         "<h3 style='font-size:20px; font-weight:700;'>Frequently purchased categories (Top 5 / customer)</h3>",
                         unsafe_allow_html=True)
 
-                    # === 修改：设置表格列宽配置，使用分类列 ===
                     column_config = {
-                        'Customer ID': st.column_config.Column(width=150),
                         'Customer Name': st.column_config.Column(width=110),
-                        '_category': st.column_config.Column(width=160, title="Category"),
+                        '_category': st.column_config.Column(width=160),  # 移除 title 参数
                         qty_col: st.column_config.Column(width=40),
                     }
 
-                    st.dataframe(top5, column_config=column_config, use_container_width=False)
-
+                    # 去掉 Customer ID 列，并重命名列标题
+                    display_df = top5[["Customer Name", "_category", qty_col]].rename(
+                        columns={"_category": "Item"}
+                    )
+                    st.dataframe(display_df, column_config=column_config, use_container_width=False)
     st.divider()
 
     # [5] Heatmap 可切换

@@ -588,8 +588,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
         else:
             need_restock["option_key"] = need_restock["display_name"]
 
-    # ✅ 再按库存量筛选需要补货的
-    need_restock = need_restock[pd.to_numeric(need_restock[qty_col], errors="coerce").fillna(0) < 0].copy()
+    need_restock = need_restock[pd.notna(pd.to_numeric(need_restock[qty_col], errors="coerce"))].copy()
 
     if not need_restock.empty:
         options = sorted(need_restock["option_key"].unique())
@@ -628,9 +627,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
         # ✅ 使用缺货数量的绝对值
         df_show["restock_needed"] = pd.to_numeric(df_show[qty_col], errors="coerce").fillna(0).abs()
 
-        # 应用阈值筛选 - 筛选小于等于输入值的项目
-        df_show = df_show[df_show["restock_needed"] <= threshold_value]
-
         if selected_items:
             selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]
             if selected_skus:
@@ -641,6 +637,9 @@ def show_inventory(tx, inventory: pd.DataFrame):
         if not df_show.empty:
             # === 修改：准备显示数据，参考 Low Stock Alerts 格式 ===
             display_restock = df_show.copy()
+            # 应用阈值筛选：显示所有小于等于阈值的记录（包括负数和0）
+            display_restock = display_restock[
+                pd.to_numeric(display_restock[qty_col], errors="coerce").fillna(0) <= threshold_value]
 
             # 确保数值列是数字类型
             display_restock["Current Quantity Vie Market & Bar"] = pd.to_numeric(
@@ -711,7 +710,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
             display_restock = display_restock.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
 
             # === 修改：所有 Current Quantity 展示绝对值 ===
-            display_restock["Current Quantity"] = display_restock["Current Quantity"].abs()
+            #display_restock["Current Quantity"] = display_restock["Current Quantity"].abs()
 
             # 选择要显示的列
             display_columns = []
@@ -1015,9 +1014,8 @@ def show_inventory(tx, inventory: pd.DataFrame):
         else:
             low_stock["option_key"] = low_stock["display_name"]
 
-    # ✅ 过滤 1–20 单位的低库存行
-    low_stock = low_stock[pd.to_numeric(low_stock[qty_col], errors="coerce").fillna(0).between(1, 20)].copy()
-
+    # 修改后：
+    low_stock = low_stock[pd.notna(pd.to_numeric(low_stock[qty_col], errors="coerce"))].copy()
     if not low_stock.empty:
         options = sorted(low_stock["option_key"].unique())
 
@@ -1069,9 +1067,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
         df_low = low_stock.copy()
         df_low["current_qty"] = pd.to_numeric(df_low[qty_col], errors="coerce").fillna(0)
 
-        # 应用阈值筛选 - 筛选小于等于输入值的项目
-        df_low = df_low[df_low["current_qty"] <= threshold_value]
-
         if selected_items:
             selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]
             if selected_skus:
@@ -1088,8 +1083,10 @@ def show_inventory(tx, inventory: pd.DataFrame):
             fig_low.update_layout(width=600)  # 设置图表宽度
             st.plotly_chart(fig_low, use_container_width=False)
 
-            # 计算所需的列
             df_low_display = df_low.copy()
+            # 应用阈值筛选：显示所有小于等于阈值的记录（包括负数和0）
+            df_low_display = df_low_display[
+                pd.to_numeric(df_low_display[qty_col], errors="coerce").fillna(0) <= threshold_value]
 
             # 确保数值列是数字类型
             df_low_display["Current Quantity Vie Market & Bar"] = pd.to_numeric(

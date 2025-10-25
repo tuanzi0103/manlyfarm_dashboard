@@ -731,16 +731,23 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         # 筛选选定日期的分类数据
         daily_category_data = category_tx[category_tx["date"].dt.date == selected_date]
 
-        # 计算bar数据
+        # === 计算bar数据 ===
         bar_data = daily_category_data[daily_category_data["Category"].isin(bar_cats)]
         bar_net_sales = proper_round(bar_data["net_sales"].sum())
         bar_transactions = bar_data["transactions"].sum()
         bar_avg_txn = bar_net_sales / bar_transactions if bar_transactions > 0 else 0
         bar_qty = bar_data["qty"].sum()
 
-        # 计算bar的3M和6M平均值（使用最近的滚动平均值）
-        bar_3m_avg = proper_round(bar_data["3M_Avg_Rolling"].iloc[-1]) if not bar_data.empty else 0
-        bar_6m_avg = proper_round(bar_data["6M_Avg_Rolling"].iloc[-1]) if not bar_data.empty else 0
+        # === 修正版：使用 category_tx 计算近90/180天 bar 总销售平均 ===
+        bar_all = category_tx[category_tx["Category"].isin(bar_cats)].copy()
+        bar_all = bar_all.sort_values("date")
+
+        selected_date_ts = pd.Timestamp(selected_date)
+        bar_recent_3m = bar_all[bar_all["date"] >= (selected_date_ts - pd.Timedelta(days=90))]
+        bar_recent_6m = bar_all[bar_all["date"] >= (selected_date_ts - pd.Timedelta(days=180))]
+
+        bar_3m_avg = proper_round(bar_recent_3m["net_sales"].sum() / 90) if not bar_recent_3m.empty else 0
+        bar_6m_avg = proper_round(bar_recent_6m["net_sales"].sum() / 180) if not bar_recent_6m.empty else 0
 
         # 计算retail数据 = total - bar
         total_data = daily_data[daily_data["date"].dt.date == selected_date]
