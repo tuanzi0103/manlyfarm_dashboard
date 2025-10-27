@@ -634,83 +634,192 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         return
 
     # === 特定日期选择 ===
-    col_date, _ = st.columns([1, 2])
+    # 改为两列布局：时间范围选择 + 日期选择
+    col_time_range, col_date, _ = st.columns([1, 1, 5])
+
+    # === 添加空白行确保水平对齐 ===
+    #st.markdown("<div style='margin-top: 0.5rem;'></div>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <style>
+
+    /* 让多选框列更紧凑 */
+    div[data-testid="column"] {
+        padding: 0 8px !important;
+    }
+
+    /* 精确控制 summary_time_range 下拉框宽度 */
+    div[data-testid*="summary_time_range"] > div[data-baseweb="select"] {
+        width: 14ch !important;
+        min-width: 14ch !important;
+        max-width: 14ch !important;
+    }
+
+    /* 日期选择框容器 - 精确宽度 */
+    div[data-testid*="stSelectbox"] {
+        width: 18ch !important;
+        min-width: 18ch !important;
+        max-width: 18ch !important;
+        display: inline-block !important;
+    }
+
+    /* 日期选择框标签 */
+    div[data-testid*="stSelectbox"] label {
+        white-space: nowrap !important;
+        font-size: 0.9rem !important;
+        width: 100% !important;
+    }
+
+    /* 下拉菜单 */
+    div[data-testid*="stSelectbox"] [data-baseweb="select"] {
+        width: 18ch !important;
+        min-width: 18ch !important;
+        max-width: 18ch !important;
+    }
+
+    /* 下拉选项容器 */
+    div[role="listbox"] {
+        min-width: 18ch !important;
+        max-width: 18ch !important;
+    }
+
+    /* 隐藏多余的下拉箭头空间 */
+    div[data-testid*="stSelectbox"] [data-baseweb="select"] > div {
+        padding-right: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with col_time_range:
+        # === 移除空白标签，现在用CSS控制 ===
+        summary_time_options = ["Daily", "WTD", "MTD", "YTD", "Custom dates"]
+        summary_time_range = st.selectbox(
+            "Choose time range",
+            summary_time_options,
+            key="summary_time_range"
+        )
+
     with col_date:
-        available_dates = sorted(daily["date"].dt.date.unique(), reverse=True)
-        # 将日期格式改为欧洲格式显示
-        available_dates_formatted = [date.strftime('%d/%m/%Y') for date in available_dates]
 
-        # === 修改2：日期选择框宽度精确匹配日期长度 ===
-        # 计算最长日期的长度（欧洲格式 dd/mm/yyyy = 10字符）
-        date_width = 18  # dd/mm/yyyy 固定10字符
-        selectbox_width = date_width + 1  # 加1给下拉箭头
+        # 只有当选择Daily时才显示日期选择框
+        if summary_time_range == "Daily":
+            available_dates = sorted(daily["date"].dt.date.unique(), reverse=True)
+            available_dates_formatted = [date.strftime('%d/%m/%Y') for date in available_dates]
 
-        st.markdown(f"""
-        <style>
-            /* 日期选择框容器 - 精确宽度 */
-            div[data-testid*="stSelectbox"] {{
-                width: {selectbox_width}ch !important;
-                min-width: {selectbox_width}ch !important;
-                max-width: {selectbox_width}ch !important;
-                display: inline-block !important;
-            }}
-            /* 日期选择框标签 */
-            div[data-testid*="stSelectbox"] label {{
-                white-space: nowrap !important;
-                font-size: 0.9rem !important;
-                width: 100% !important;
-            }}
-            /* 下拉菜单 */
-            div[data-testid*="stSelectbox"] [data-baseweb="select"] {{
-                width: {selectbox_width}ch !important;
-                min-width: {selectbox_width}ch !important;
-                max-width: {selectbox_width}ch !important;
-            }}
-            /* 下拉选项容器 */
-            div[role="listbox"] {{
-                min-width: {selectbox_width}ch !important;
-                max-width: {selectbox_width}ch !important;
-            }}
-            /* 隐藏多余的下拉箭头空间 */
-            div[data-testid*="stSelectbox"] [data-baseweb="select"] > div {{
-                padding-right: 0 !important;
-            }}
-        </style>
-        """, unsafe_allow_html=True)
+            date_width = 18
+            selectbox_width = date_width + 1
 
-        selected_date_formatted = st.selectbox("Choose date", available_dates_formatted)
 
-        # 将选择的日期转换回日期对象
-        selected_date = pd.to_datetime(selected_date_formatted, format='%d/%m/%Y').date()
+            selected_date_formatted = st.selectbox("Choose date", available_dates_formatted)
+
+            # 将选择的日期转换回日期对象
+            selected_date = pd.to_datetime(selected_date_formatted, format='%d/%m/%Y').date()
+        else:
+            # 对于非Daily选项，设置一个默认日期（使用最新日期）
+            selected_date = daily["date"].max().date()
+            selected_date_formatted = selected_date.strftime('%d/%m/%Y')
+
+    # === 自定义日期范围选择（仅当选择Custom dates时显示） ===
+    summary_custom_dates_selected = False
+    summary_t1 = None
+    summary_t2 = None
+
+    if summary_time_range == "Custom dates":
+        summary_custom_dates_selected = True
+        st.markdown("<h4 style='font-size:16px; font-weight:700;'>📅 Custom Date Range for Summary</h4>",
+                    unsafe_allow_html=True)
+
+        col_from, col_to, _ = st.columns([1, 1, 5])
+
+        with col_from:
+            summary_t1 = st.date_input(
+                "From",
+                value=pd.Timestamp.today().normalize() - pd.Timedelta(days=7),
+                key="summary_date_from",
+                format="DD/MM/YYYY"
+            )
+
+        with col_to:
+            summary_t2 = st.date_input(
+                "To",
+                value=pd.Timestamp.today().normalize(),
+                key="summary_date_to",
+                format="DD/MM/YYYY"
+            )
+
+    # === 根据时间范围筛选数据 ===
+    # === 根据时间范围筛选数据 ===
+    def filter_data_by_time_range(data, time_range, selected_date, custom_dates_selected=False, t1=None, t2=None):
+        """根据时间范围筛选数据"""
+        if data.empty:
+            return data
+
+        data_filtered = data.copy()
+
+        # 获取当前日期
+        today = pd.Timestamp.today().normalize()
+
+        # 计算时间范围筛选条件
+        start_of_week = today - pd.Timedelta(days=today.weekday())
+        start_of_month = today.replace(day=1)
+        start_of_year = today.replace(month=1, day=1)
+
+        # 检查数据框是否有date列，如果没有则使用Datetime列
+        if 'date' in data_filtered.columns:
+            date_col = 'date'
+        elif 'Datetime' in data_filtered.columns:
+            date_col = 'Datetime'
+            # 确保Datetime列是datetime类型
+            data_filtered[date_col] = pd.to_datetime(data_filtered[date_col])
+        else:
+            # 如果没有日期列，返回原始数据
+            return data_filtered
+
+        if time_range == "WTD":
+            data_filtered = data_filtered[data_filtered[date_col] >= start_of_week]
+        elif time_range == "MTD":
+            data_filtered = data_filtered[data_filtered[date_col] >= start_of_month]
+        elif time_range == "YTD":
+            data_filtered = data_filtered[data_filtered[date_col] >= start_of_year]
+        elif time_range == "Daily":
+            data_filtered = data_filtered[data_filtered[date_col].dt.date == selected_date]
+        elif time_range == "Custom dates" and custom_dates_selected and t1 and t2:
+            t1_ts = pd.to_datetime(t1)
+            t2_ts = pd.to_datetime(t2)
+            data_filtered = data_filtered[
+                (data_filtered[date_col] >= t1_ts) & (data_filtered[date_col] <= t2_ts)
+                ]
+
+        return data_filtered
+
+    # 筛选daily数据
+    df_selected_date = filter_data_by_time_range(
+        daily, summary_time_range, selected_date,
+        summary_custom_dates_selected, summary_t1, summary_t2
+    )
 
     # 转换 selected_date 为 Timestamp 用于比较
     selected_date_ts = pd.Timestamp(selected_date)
 
-    # 筛选选定日期的数据
-    df_selected_date = daily[daily["date"].dt.date == selected_date]
-
     # === 计算客户数量 ===
-    def calculate_customer_count(tx_df, selected_date):
+    def calculate_customer_count(tx_df, time_range, selected_date, custom_dates_selected=False, t1=None, t2=None):
         if tx_df is None or tx_df.empty:
             return 0
         if 'Datetime' not in tx_df.columns:
             return 0
 
-        tx_df = tx_df.copy()
-        tx_df['Datetime'] = pd.to_datetime(tx_df['Datetime'], errors='coerce')
-        tx_df = tx_df.dropna(subset=['Datetime'])
-        if tx_df.empty:
+        # 根据时间范围筛选交易数据
+        tx_df_filtered = filter_data_by_time_range(
+            tx_df, time_range, selected_date, custom_dates_selected, t1, t2
+        )
+
+        if tx_df_filtered.empty:
             return 0
 
-        selected_date_str = selected_date.strftime('%Y-%m-%d')
-        daily_tx = tx_df[tx_df['Datetime'].dt.strftime('%Y-%m-%d') == selected_date_str]
-        if daily_tx.empty:
+        if 'Card Brand' not in tx_df_filtered.columns or 'PAN Suffix' not in tx_df_filtered.columns:
             return 0
 
-        if 'Card Brand' not in daily_tx.columns or 'PAN Suffix' not in daily_tx.columns:
-            return 0
-
-        filtered_tx = daily_tx.dropna(subset=['Card Brand', 'PAN Suffix'])
+        filtered_tx = tx_df_filtered.dropna(subset=['Card Brand', 'PAN Suffix'])
         if filtered_tx.empty:
             return 0
 
@@ -719,23 +828,25 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         unique_customers = filtered_tx[['Card Brand', 'PAN Suffix']].drop_duplicates()
 
         return len(unique_customers)
-
     # === 计算bar和retail的特定日期数据 ===
-    def calculate_bar_retail_data(category_tx, selected_date, daily_data):
-        """计算bar和retail在选定日期的数据"""
-        selected_date_ts = pd.Timestamp(selected_date)
+    def calculate_bar_retail_data(category_tx, time_range, selected_date, daily_data, custom_dates_selected=False,
+                                  t1=None, t2=None):
+        """计算bar和retail在选定时间范围的数据"""
 
         # bar分类定义
         bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
 
-        # 筛选选定日期的分类数据
-        daily_category_data = category_tx[category_tx["date"].dt.date == selected_date]
+        # 根据时间范围筛选分类数据
+        category_filtered = filter_data_by_time_range(
+            category_tx, time_range, selected_date, custom_dates_selected, t1, t2
+        )
 
         # === 计算bar数据 ===
-        bar_data = daily_category_data[daily_category_data["Category"].isin(bar_cats)]
-        bar_net_sales = proper_round(bar_data["net_sales"].sum())
+        bar_data = category_filtered[category_filtered["Category"].isin(bar_cats)].copy()
+        bar_net_sales_raw = bar_data["net_sales"].sum()
+        bar_net_sales = proper_round(bar_net_sales_raw)
         bar_transactions = bar_data["transactions"].sum()
-        bar_avg_txn = bar_net_sales / bar_transactions if bar_transactions > 0 else 0
+        bar_avg_txn = bar_net_sales_raw / bar_transactions if bar_transactions > 0 else 0
         bar_qty = bar_data["qty"].sum()
 
         # === 修正版：使用 category_tx 计算近90/180天 bar 总销售平均 ===
@@ -749,23 +860,30 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         bar_3m_avg = proper_round(bar_recent_3m["net_sales"].sum() / 90) if not bar_recent_3m.empty else 0
         bar_6m_avg = proper_round(bar_recent_6m["net_sales"].sum() / 180) if not bar_recent_6m.empty else 0
 
-        # 计算retail数据 = total - bar
-        total_data = daily_data[daily_data["date"].dt.date == selected_date]
-        total_net_sales = proper_round(total_data["net_sales_with_tax"].sum())
-        total_transactions = total_data["transactions"].sum()
-        total_qty = total_data["qty"].sum()
+        # === 计算retail数据 ===
+        retail_data = category_filtered[~category_filtered["Category"].isin(bar_cats)].copy()
+        retail_net_sales_raw = retail_data["net_sales"].sum()
+        retail_net_sales = proper_round(retail_net_sales_raw)
+        retail_transactions = retail_data["transactions"].sum()
+        retail_avg_txn = retail_net_sales_raw / retail_transactions if retail_transactions > 0 else 0
+        retail_qty = retail_data["qty"].sum()
 
-        retail_net_sales = total_net_sales - bar_net_sales
-        retail_transactions = total_transactions - bar_transactions
-        retail_avg_txn = retail_net_sales / retail_transactions if retail_transactions > 0 else 0
-        retail_qty = total_qty - bar_qty
+        retail_all = category_tx[~category_tx["Category"].isin(bar_cats)].copy()
+        retail_all = retail_all.sort_values("date")
 
-        # 计算retail的3M和6M平均值（使用最近的滚动平均值）
-        retail_3m_avg = proper_round(total_data["3M_Avg_Rolling"].iloc[-1]) - bar_3m_avg if not total_data.empty else 0
-        retail_6m_avg = proper_round(total_data["6M_Avg_Rolling"].iloc[-1]) - bar_6m_avg if not total_data.empty else 0
+        retail_recent_3m = retail_all[retail_all["date"] >= (selected_date_ts - pd.Timedelta(days=90))]
+        retail_recent_6m = retail_all[retail_all["date"] >= (selected_date_ts - pd.Timedelta(days=180))]
 
-        # 计算bar和retail的客户数量（这里简化处理，按交易比例分配）
-        total_customers = calculate_customer_count(tx, selected_date)
+        retail_3m_avg = proper_round(retail_recent_3m["net_sales"].sum() / 90) if not retail_recent_3m.empty else 0
+        retail_6m_avg = proper_round(retail_recent_6m["net_sales"].sum() / 180) if not retail_recent_6m.empty else 0
+
+        # === total改为bar + retail ===
+        total_net_sales = bar_net_sales + retail_net_sales
+        total_transactions = bar_transactions + retail_transactions
+        total_qty = bar_qty + retail_qty
+
+        # === 客户数保持按交易比例分配 ===
+        total_customers = calculate_customer_count(tx, time_range, selected_date, custom_dates_selected, t1, t2)
         bar_customers = int(total_customers * (bar_transactions / total_transactions)) if total_transactions > 0 else 0
         retail_customers = total_customers - bar_customers
 
@@ -787,6 +905,15 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
                 "3M Avg": retail_3m_avg,
                 "6M Avg": retail_6m_avg,
                 "Items Sold": retail_qty
+            },
+            "total": {
+                "Daily Net Sales": total_net_sales,
+                "Daily Transactions": total_transactions,
+                "# of Customers": total_customers,
+                "Avg Transaction": total_net_sales / total_transactions if total_transactions > 0 else 0,
+                "3M Avg": bar_3m_avg + retail_3m_avg,
+                "6M Avg": bar_6m_avg + retail_6m_avg,
+                "Items Sold": total_qty
             }
         }
 
@@ -794,7 +921,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
     kpis_main = {
         "Daily Net Sales": proper_round(df_selected_date["net_sales_with_tax"].sum()),
         "Daily Transactions": df_selected_date["transactions"].sum(),
-        "# of Customers": calculate_customer_count(tx, selected_date),
+        "# of Customers": calculate_customer_count(tx, summary_time_range, selected_date, summary_custom_dates_selected, summary_t1, summary_t2),
         "Avg Transaction": df_selected_date["avg_txn"].mean(),
         "3M Avg": proper_round(daily["3M_Avg_Rolling"].iloc[-1]),
         "6M Avg": proper_round(daily["6M_Avg_Rolling"].iloc[-1]),
@@ -810,7 +937,10 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         profit_latest = float(pd.to_numeric(sub["Profit"], errors="coerce").sum())
 
     # 计算bar和retail数据
-    bar_retail_data = calculate_bar_retail_data(category_tx, selected_date, daily)
+    bar_retail_data = calculate_bar_retail_data(
+        category_tx, summary_time_range, selected_date, daily,
+        summary_custom_dates_selected, summary_t1, summary_t2
+    )
 
     # 显示选定日期（字体加大）
     st.markdown(
@@ -819,13 +949,13 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
     # ===== 组装三行数据 =====
     total_row = [
-        f"${proper_round(kpis_main['Daily Net Sales']):,}",
-        f"{proper_round(kpis_main['Daily Transactions']):,}",
-        f"{proper_round(kpis_main['# of Customers']):,}",
-        f"${kpis_main['Avg Transaction']:.2f}",
-        f"${proper_round(kpis_main['3M Avg']):,}",
-        f"${proper_round(kpis_main['6M Avg']):,}",
-        f"{proper_round(kpis_main['Items Sold']):,}",
+        f"${proper_round(bar_retail_data['total']['Daily Net Sales']):,}",
+        f"{proper_round(bar_retail_data['total']['Daily Transactions']):,}",
+        f"{proper_round(bar_retail_data['total']['# of Customers']):,}",
+        f"${bar_retail_data['total']['Avg Transaction']:.2f}",
+        f"${proper_round(bar_retail_data['total']['3M Avg']):,}",
+        f"${proper_round(bar_retail_data['total']['6M Avg']):,}",
+        f"{proper_round(bar_retail_data['total']['Items Sold']):,}",
         f"${proper_round(inv_value_latest):,} <br><span style='font-size:10px; color:#666;'>as of {pd.to_datetime(inv_latest_date).strftime('%d/%m/%Y') if inv_latest_date else '-'}</span>"
     ]
 

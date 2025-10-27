@@ -197,14 +197,29 @@ def show_customer_segmentation(tx, members):
     tx = tx.copy()
     members = members.copy()
 
-    # === Restrict analysis to last 4 weeks ===
+    # === Prepare Datetime column ===
     tx["Datetime"] = pd.to_datetime(tx.get("Datetime", pd.NaT), errors="coerce")
     today = pd.Timestamp.today().normalize()
     four_weeks_ago = today - pd.Timedelta(weeks=4)
-    tx = tx[(tx["Datetime"] >= four_weeks_ago) & (tx["Datetime"] <= today)]
+    # ⚠️ 不提前过滤，这样 period 1 可以用到最早的数据
+    # tx = tx[(tx["Datetime"] >= four_weeks_ago) & (tx["Datetime"] <= today)]
 
     # --- 给交易数据打上 is_member 标记
     df = member_flagged_transactions(tx, members)
+    # === 新增：统一 Customer Name 与最新 Customer ID ===
+    if "Customer Name" in df.columns and "Customer ID" in df.columns and "Datetime" in df.columns:
+        # 确保 Datetime 为时间格式
+        df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
+
+        # 找到每个 Customer Name 最近一次交易对应的 Customer ID
+        latest_ids = (df.dropna(subset=["Customer Name", "Customer ID", "Datetime"])
+                      .sort_values("Datetime")
+                      .groupby("Customer Name")
+                      .tail(1)[["Customer Name", "Customer ID"]]
+                      .drop_duplicates("Customer Name"))
+
+        # 更新 df 中的 Customer ID
+        df = df.drop(columns=["Customer ID"]).merge(latest_ids, on="Customer Name", how="left")
 
     # =========================
     # 👑 前置功能（User Analysis 之前）
@@ -335,78 +350,141 @@ def show_customer_segmentation(tx, members):
     if time_col and "Customer Name" in df.columns:
         t = pd.to_datetime(df[time_col], errors="coerce")
         df["_ts"] = t
-        # === Define last 4 weeks as "last month" ===
-        today = pd.Timestamp.today()
-        last_month_end = today
-        last_month_start = today - pd.Timedelta(weeks=4)
 
-        # === 按 Customer Name 统计访问频率 ===
+        # === 使用正确的日期范围计算 ===
+        today = pd.Timestamp.today().normalize()
+
+        # 第一个期间：从数据的实际第一天到四周前（28天前）
+        data_start_date = df["_ts"].min().normalize()  # 使用数据的实际开始日期
+        period1_end = today - pd.Timedelta(days=28)  # 四周前
+
+        # 第二个期间：过去四周（今天往前推28天）
+        period2_start = today - pd.Timedelta(days=28)
+        period2_end = today
+
+        # 检查日期范围是否有效
+        if period1_end < data_start_date:
+            st.warning(
+                f"⚠️ Period 1 end date ({period1_end}) is before data start date ({data_start_date}). Adjusting Period 1 to use available data.")
+            # 如果Period 1结束日期在数据开始之前，调整Period 1为数据开始到Period 2开始前一天
+            period1_end = period2_start - pd.Timedelta(days=1)
+            st.write(f"Adjusted Period 1: {data_start_date} to {period1_end}")
+
+        # === 直接按日期过滤 ===
         base = df.dropna(subset=["Customer Name"])
-        month_key = df["_ts"].dt.to_period("M").rename("month")
-        day_key = df["_ts"].dt.date.rename("day")
 
-        per_day = (base.dropna(subset=["Customer Name", "Transaction ID"])
-                   .groupby(["Customer Name", month_key, day_key])["Transaction ID"]
-                   .nunique()
-                   .reset_index(name="visits_per_day"))
+        # 第一个期间：历史数据（从数据开始到四周前）
+        mask_period1 = (base["_ts"] >= data_start_date) & (base["_ts"] <= period1_end)
+        period1_data = base[mask_period1]
 
-        per_month = per_day.groupby(["Customer Name", "month"]).size().reset_index(name="visits")
+        # 第二个期间：最近四周
+        mask_period2 = (base["_ts"] >= period2_start) & (base["_ts"] <= period2_end)
+        period2_data = base[mask_period2]
 
-        per_month["month_start"] = per_month["month"].dt.to_timestamp()
-        mask_last = (per_month["month_start"] >= last_month_start) & (per_month["month_start"] <= last_month_end)
-        pm_last = per_month.loc[mask_last, ["Customer Name", "visits"]].rename(columns={"visits": "Last Month Visit"})
-        hist_avg = per_month.loc[~mask_last].groupby("Customer Name")["visits"].mean().reset_index(
-            name="Average Visit")
+        # 获取第一个期间的客户（历史常客）
+        if not period1_data.empty:
+            # 计算历史访问频率（按天去重）
+            period1_visits = (period1_data.dropna(subset=["Customer Name", "Transaction ID"])
+                              .groupby(["Customer Name", period1_data["_ts"].dt.date])["Transaction ID"]
+                              .nunique()
+                              .reset_index(name="daily_visits"))
 
-        churn_tag = hist_avg.merge(pm_last, on="Customer Name", how="left").fillna({"Last Month Visit": 0})
+            # === 修改：计算平均每月来访次数（仅对有来访的月份取平均） ===
+            period1_visits["_month"] = pd.to_datetime(period1_visits["_ts"]).dt.to_period("M")
 
-        # ✅ 过滤掉原本就偶尔来的顾客，保留常客
-        churn_tag = churn_tag[churn_tag["Average Visit"] >= 2]
+            # 每个客户在每个月的访问次数（去重按天或交易）
+            monthly_visits = (period1_visits.groupby(["Customer Name", "_month"])
+                              ["daily_visits"].sum()
+                              .reset_index(name="monthly_visits"))
 
-        # ✅ 只保留 last_month_visit 为 0 或比平均低的顾客
-        churn_tag = churn_tag[
-            (churn_tag["Last Month Visit"] == 0) |
-            (churn_tag["Last Month Visit"] < churn_tag["Average Visit"])
-            ]
+            # 对每个客户计算平均每月来访次数（仅统计有来访的月份）
+            customer_avg_visits = (monthly_visits.groupby("Customer Name")["monthly_visits"]
+                                   .mean()
+                                   .reset_index(name="Average Visit"))
+            customer_avg_visits["Average Visit"] = customer_avg_visits["Average Visit"].round(2)
 
-        # ✅ 过滤掉 Customer Name 是手机号的记录
-        churn_tag = churn_tag[~churn_tag["Customer Name"].apply(is_phone_number)]
+            # 过滤常客（平均访问次数 >= 2）
+            regular_customers = customer_avg_visits[customer_avg_visits["Average Visit"] >= 2]
 
-        churn_tag = churn_tag.sort_values("Average Visit", ascending=False).head(20)
+        else:
+            regular_customers = pd.DataFrame(columns=["Customer Name", "Average Visit"])
+            st.warning("No data found in Period 1. This might be because the data only started recently.")
 
-        # 映射手机号（如果 members 表有）
-        if "Square Customer ID" in members.columns:
-            id_name = tx[["Customer ID", "Customer Name"]].drop_duplicates().dropna(subset=["Customer ID"])
-            phones_map = (
-                members.rename(columns={"Square Customer ID": "Customer ID", "Phone Number": "Phone"})
-                [["Customer ID", "Phone"]]
-                .dropna(subset=["Customer ID"])
-                .drop_duplicates("Customer ID")
-            )
-            phones_map["Customer ID"] = phones_map["Customer ID"].astype(str)
-            phones_map["Phone"] = phones_map["Phone"].apply(format_phone_number)
-            churn_tag = churn_tag.merge(id_name, on="Customer Name", how="left").merge(
-                phones_map, on="Customer ID", how="left"
-            )
+        # 获取第二个期间的客户
+        if not period2_data.empty:
+            period2_customers = period2_data["Customer Name"].drop_duplicates().tolist()
+
+        else:
+            period2_customers = []
+            st.warning("No data found in Period 2.")
+
+        # 找出流失客户：在第一个期间是常客，但在第二个期间没有出现
+        if not regular_customers.empty and period2_customers:
+            # 找出在第二个期间没有出现的常客
+            lost_customers = regular_customers[~regular_customers["Customer Name"].isin(period2_customers)].copy()
+
+            # 添加 Last Month Visit 列（都为0，因为他们在第二个期间没出现）
+            lost_customers["Last Month Visit"] = 0
+
+            # 排序并取前20
+            churn_tag_final = lost_customers.sort_values("Average Visit", ascending=False).head(20)
+        else:
+            churn_tag_final = pd.DataFrame(columns=["Customer Name", "Average Visit", "Last Month Visit"])
+            if regular_customers.empty:
+                st.info("No regular customers found in historical data.")
+            else:
+                st.info("No period 2 data to compare against.")
+
+        # 映射 Customer ID 和手机号
+        if not churn_tag_final.empty:
+            # 获取 Customer ID 映射
+            if "Customer ID" in df.columns:
+                id_mapping = df[["Customer Name", "Customer ID"]].drop_duplicates().dropna()
+                churn_tag_final = churn_tag_final.merge(id_mapping, on="Customer Name", how="left")
+            else:
+                churn_tag_final["Customer ID"] = ""
+
+            # 映射手机号
+            if "Square Customer ID" in members.columns and "Customer ID" in churn_tag_final.columns:
+                phones_map = (
+                    members.rename(columns={"Square Customer ID": "Customer ID", "Phone Number": "Phone"})
+                    [["Customer ID", "Phone"]]
+                    .dropna(subset=["Customer ID"])
+                    .drop_duplicates("Customer ID")
+                )
+                phones_map["Customer ID"] = phones_map["Customer ID"].astype(str)
+                phones_map["Phone"] = phones_map["Phone"].apply(format_phone_number)
+
+                if "Customer ID" in churn_tag_final.columns:
+                    churn_tag_final["Customer ID"] = churn_tag_final["Customer ID"].astype(str)
+                    churn_tag_final = churn_tag_final.merge(phones_map, on="Customer ID", how="left")
+                else:
+                    churn_tag_final["Phone"] = ""
+            else:
+                churn_tag_final["Phone"] = ""
 
         st.markdown("<h3 style='font-size:20px; font-weight:700;'>Top 20 Regulars who didn't come last month</h3>",
                     unsafe_allow_html=True)
 
-        # === 修改：设置表格列宽配置 ===
-        column_config = {
-            'Customer Name': st.column_config.Column(width=105),
-            'Customer ID': st.column_config.Column(width=100),
-            'Phone': st.column_config.Column(width=90),
-            'Average Visit': st.column_config.Column(width=90),
-            'Last Month Visit': st.column_config.Column(width=110),
-        }
+        # 显示结果
+        if not churn_tag_final.empty:
+            # === 设置表格列宽配置 ===
+            column_config = {
+                'Customer Name': st.column_config.Column(width=105),
+                'Customer ID': st.column_config.Column(width=100),
+                'Phone': st.column_config.Column(width=90),
+                'Average Visit': st.column_config.Column(width=90),
+                'Last Month Visit': st.column_config.Column(width=110),
+            }
 
-        st.dataframe(
-            churn_tag[["Customer Name", "Customer ID", "Phone",
-                       "Average Visit", "Last Month Visit"]],
-            column_config=column_config,
-            use_container_width=False
-        )
+            st.dataframe(
+                churn_tag_final[["Customer Name", "Customer ID", "Phone",
+                                 "Average Visit", "Last Month Visit"]],
+                column_config=column_config,
+                use_container_width=False
+            )
+        else:
+            st.info("No regular customers found who didn't visit in the last month.")
 
     st.divider()
 
@@ -446,7 +524,7 @@ def show_customer_segmentation(tx, members):
             "Customer Name": st.column_config.Column(width=120),
             "Customer ID": st.column_config.Column(width=140),
             "Category": st.column_config.Column(width=140),
-            "Item": st.column_config.Column(width=110),
+            "Item": st.column_config.Column(width=250),
             "Qty": st.column_config.Column(width=40),
             "Net Sales": st.column_config.Column(width=80),
         }
@@ -479,7 +557,7 @@ def show_customer_segmentation(tx, members):
 
                 column_config = {
                     'Customer Name': st.column_config.Column(width=110),
-                    item_col_display: st.column_config.Column(width=160),  # 移除 title 参数
+                    item_col_display: st.column_config.Column(width=250),  # 移除 title 参数
                     qty_col: st.column_config.Column(width=40),
                 }
 
@@ -510,7 +588,7 @@ def show_customer_segmentation(tx, members):
 
                     column_config = {
                         'Customer Name': st.column_config.Column(width=110),
-                        '_category': st.column_config.Column(width=160),  # 移除 title 参数
+                        '_category': st.column_config.Column(width=250),  # 移除 title 参数
                         qty_col: st.column_config.Column(width=40),
                     }
 

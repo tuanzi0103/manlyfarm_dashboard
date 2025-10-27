@@ -69,7 +69,14 @@ def persisting_multiselect(label, options, key, default=None, width_chars=None):
     </style>
     """, unsafe_allow_html=True)
 
-    return st.multiselect(label, options, default=st.session_state[key], key=key)
+    # --- 修复：确保默认值存在于新 options 中 ---
+    valid_defaults = [v for v in st.session_state[key] if v in options]
+    if len(valid_defaults) < len(st.session_state[key]):
+        st.warning(
+            "⚠️ Some previously selected items are no longer available due to new input; selection has been reset.")
+        st.session_state[key] = valid_defaults
+
+    return st.multiselect(label, options, default=valid_defaults, key=key)
 
 
 def filter_by_time_range(df, time_range, custom_dates_selected=False, t1=None, t2=None):
@@ -465,10 +472,21 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
             display_df["Velocity"] = display_df["Velocity"].apply(clean_velocity)
 
-            # Total Retail, Total Inventory, Profit 列为0的值用 '-' 替换
-            display_df["Total Retail"] = display_df["Total Retail"].apply(lambda x: '-' if x == 0 else x)
-            display_df["Total Inventory"] = display_df["Total Inventory"].apply(lambda x: '-' if x == 0 else x)
-            display_df["Profit"] = display_df["Profit"].apply(lambda x: '-' if x == 0 else x)
+            # === 确保数值列为float，0显示为NaN用于显示'–' ===
+            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
+                display_df[c] = pd.to_numeric(display_df[c], errors="coerce")
+                display_df.loc[display_df[c].fillna(0) == 0, c] = pd.NA
+
+            # ✅ Profit Margin 特殊处理（去掉%、转float、保持NaN用于显示‘–’）
+            if "Profit Margin" in display_df.columns:
+                display_df["Profit Margin"] = (
+                    display_df["Profit Margin"]
+                    .astype(str)
+                    .str.replace("%", "", regex=False)
+                    .replace("-", None)
+                )
+                display_df["Profit Margin"] = pd.to_numeric(display_df["Profit Margin"], errors="coerce")
+                display_df.loc[display_df["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
 
             # 其他空值用字符 '-' 替换
             for col in display_columns:
@@ -481,12 +499,11 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 'Item Variation Name': st.column_config.Column(width=50),
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                # === 修复：使用 NumberColumn 确保正确排序 ===
-                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
-                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
-                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
-                'Profit Margin': st.column_config.Column(width=90),
-                'Velocity': st.column_config.Column(width=60),
+                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
+                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
+                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
+                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
+                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
             }
 
             st.dataframe(
@@ -736,11 +753,21 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
             display_restock["Velocity"] = display_restock["Velocity"].apply(clean_velocity)
 
-            # Total Retail, Total Inventory, Profit 列为0的值用 '-' 替换
-            display_restock["Total Retail"] = display_restock["Total Retail"].apply(lambda x: '-' if x == 0 else x)
-            display_restock["Total Inventory"] = display_restock["Total Inventory"].apply(
-                lambda x: '-' if x == 0 else x)
-            display_restock["Profit"] = display_restock["Profit"].apply(lambda x: '-' if x == 0 else x)
+            # === 保持float并用NaN替代0以显示'–'，不影响数值排序 ===
+            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
+                display_restock[c] = pd.to_numeric(display_restock[c], errors="coerce")
+                display_restock.loc[display_restock[c].fillna(0) == 0, c] = pd.NA
+
+            # ✅ Profit Margin 特殊处理
+            if "Profit Margin" in display_restock.columns:
+                display_restock["Profit Margin"] = (
+                    display_restock["Profit Margin"]
+                    .astype(str)
+                    .str.replace("%", "", regex=False)
+                    .replace("-", None)
+                )
+                display_restock["Profit Margin"] = pd.to_numeric(display_restock["Profit Margin"], errors="coerce")
+                display_restock.loc[display_restock["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
 
             # 其他空值用字符 '-' 替换
             for col in display_columns:
@@ -754,12 +781,11 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 'Item Variation Name': st.column_config.Column(width=50),
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                # === 修复：使用 NumberColumn 确保正确排序 ===
-                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
-                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
-                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
-                'Profit Margin': st.column_config.Column(width=90),
-                'Velocity': st.column_config.Column(width=60),
+                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
+                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
+                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
+                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
+                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
             }
 
             st.dataframe(
@@ -952,11 +978,19 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
             df_clear_display["Velocity"] = df_clear_display["Velocity"].apply(clean_velocity)
 
-            # Total Retail, Total Inventory, Profit 列为0的值用 '-' 替换
-            df_clear_display["Total Retail"] = df_clear_display["Total Retail"].apply(lambda x: '-' if x == 0 else x)
-            df_clear_display["Total Inventory"] = df_clear_display["Total Inventory"].apply(
-                lambda x: '-' if x == 0 else x)
-            df_clear_display["Profit"] = df_clear_display["Profit"].apply(lambda x: '-' if x == 0 else x)
+            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
+                df_clear_display[c] = pd.to_numeric(df_clear_display[c], errors="coerce")
+                df_clear_display.loc[df_clear_display[c].fillna(0) == 0, c] = pd.NA
+
+            if "Profit Margin" in df_clear_display.columns:
+                df_clear_display["Profit Margin"] = (
+                    df_clear_display["Profit Margin"]
+                    .astype(str)
+                    .str.replace("%", "", regex=False)
+                    .replace("-", None)
+                )
+                df_clear_display["Profit Margin"] = pd.to_numeric(df_clear_display["Profit Margin"], errors="coerce")
+                df_clear_display.loc[df_clear_display["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
 
             # 其他空值用字符 '-' 替换
             for col in display_columns:
@@ -969,12 +1003,11 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 'Item Variation Name': st.column_config.Column(width=50),
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                # === 修复：使用 NumberColumn 确保正确排序 ===
-                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
-                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
-                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
-                'Profit Margin': st.column_config.Column(width=90),
-                'Velocity': st.column_config.Column(width=60),
+                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
+                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
+                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
+                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
+                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
             }
 
             st.dataframe(
@@ -1184,10 +1217,21 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
             df_low_display["Velocity"] = df_low_display["Velocity"].apply(clean_velocity)
 
-            # Total Retail, Total Inventory, Profit 列为0的值用 '-' 替换
-            df_low_display["Total Retail"] = df_low_display["Total Retail"].apply(lambda x: '-' if x == 0 else x)
-            df_low_display["Total Inventory"] = df_low_display["Total Inventory"].apply(lambda x: '-' if x == 0 else x)
-            df_low_display["Profit"] = df_low_display["Profit"].apply(lambda x: '-' if x == 0 else x)
+            # === 保持float，0→NaN，显示'–'，不影响排序 ===
+            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
+                df_low_display[c] = pd.to_numeric(df_low_display[c], errors="coerce")
+                df_low_display.loc[df_low_display[c].fillna(0) == 0, c] = pd.NA
+
+            # ✅ Profit Margin 特殊处理
+            if "Profit Margin" in df_low_display.columns:
+                df_low_display["Profit Margin"] = (
+                    df_low_display["Profit Margin"]
+                    .astype(str)
+                    .str.replace("%", "", regex=False)
+                    .replace("-", None)
+                )
+                df_low_display["Profit Margin"] = pd.to_numeric(df_low_display["Profit Margin"], errors="coerce")
+                df_low_display.loc[df_low_display["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
 
             # 其他空值用字符 '-' 替换
             for col in display_columns:
@@ -1200,12 +1244,11 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 'Item Variation Name': st.column_config.Column(width=50),
                 'SKU': st.column_config.Column(width=100),
                 'Current Quantity': st.column_config.Column(width=110),
-                # === 修复：使用 NumberColumn 确保正确排序 ===
-                'Total Inventory': st.column_config.NumberColumn(width=100, format="$%.2f"),
-                'Total Retail': st.column_config.NumberColumn(width=80, format="$%.2f"),
-                'Profit': st.column_config.NumberColumn(width=50, format="$%.2f"),
-                'Profit Margin': st.column_config.Column(width=90),
-                'Velocity': st.column_config.Column(width=60),
+                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
+                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
+                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
+                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
+                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
             }
 
             st.dataframe(

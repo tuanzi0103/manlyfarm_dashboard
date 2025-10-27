@@ -678,9 +678,16 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         else:
             summary["per_day"] = summary["items_sold"] / 7  # 默认按7天计算
 
-        # === 修改：只在最后显示时进行四舍五入 ===
+        # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
+        summary["daily_sales_raw"] = summary["daily_sales"]  # 保存原始浮点值供后续计算
+
+        # 仅 items_sold 取整
         summary["items_sold"] = summary["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        summary["daily_sales"] = summary["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+
+        # 展示列用整数，但不影响 raw 精度
+        summary["daily_sales_display"] = summary["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+
+        # per_day 也取整展示
         summary["per_day"] = summary["per_day"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
 
         return summary
@@ -765,26 +772,75 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # Total 行始终放在最上方
         df_bar_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
 
-        # === 不再创建字符串列，直接保留数值 ===
+        # === ✅ 保持等宽且保留自定义列宽 ===
+        TABLE_WIDTH = 730
+
+        # === 定义统一列宽配置（保留原来比例） ===
+        bar_column_config = {
+            "Row Labels": st.column_config.Column(width=130),
+            "Sum of Items Sold": st.column_config.Column(width=110),
+            "Sum of Daily Sales": st.column_config.NumberColumn(width=130, format="$%d"),
+            "Per day": st.column_config.Column(width=70),
+            "Comments": st.column_config.Column(width=240),
+            "Weekly change": st.column_config.NumberColumn(width=100, label="Weekly change", format="%.2f%%"),
+        }
+
+        # === 固定宽度的CSS，不改列宽比例，只统一外框 ===
+        st.markdown(f"""
+        <style>
+        .bar-table-wrapper {{
+            width:{TABLE_WIDTH}px !important;
+            max-width:{TABLE_WIDTH}px !important;
+            margin: 0;
+            padding: 0;
+        }}
+        .bar-table-wrapper [data-testid="stDataFrame"] {{
+            width:{TABLE_WIDTH}px !important;
+            max-width:{TABLE_WIDTH}px !important;
+            min-width:{TABLE_WIDTH}px !important;
+            overflow-x:hidden !important;
+        }}
+        .bar-table-wrapper [data-testid="stDataFrame"] table {{
+            table-layout: fixed !important;
+            width:{TABLE_WIDTH}px !important;
+        }}
+        .bar-table-wrapper [data-testid="stDataFrame"] td,
+        .bar-table-wrapper [data-testid="stDataFrame"] th {{
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+
+        # === 两个表放在同一个容器 ===
+        st.markdown(f"<div class='bar-table-wrapper'>", unsafe_allow_html=True)
+
+        # Total 表
         st.dataframe(
-            df_bar_summary_sorted[['Row Labels', 'Sum of Items Sold', 'Sum of Daily Sales',
-                                   'Per day', 'Comments', 'Weekly change']],
-            column_config={
-                'Row Labels': st.column_config.Column(width="150px"),
-                'Sum of Items Sold': st.column_config.Column(width="130px"),
-                'Sum of Daily Sales': st.column_config.NumberColumn(width="140px", format="$%d"),
-                # ✅ 改成数值列，自动支持点击 header 正确排序
-                'Weekly change': st.column_config.NumberColumn(
-                    width="120px",
-                    label="Weekly change",
-                    format="%.2f%%"  # 自动加上百分号
-                ),
-                'Per day': st.column_config.Column(width="100px"),
-                'Comments': st.column_config.Column(width="100px")
-            },
+            total_row[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
+                       "Per day", "Comments", "Weekly change"]],
+            column_config=bar_column_config,
             hide_index=True,
-            use_container_width=False
+            use_container_width=False  # 🚫 不自动平分列宽
         )
+
+        # 灰色分隔线（宽度与表一致）
+        st.markdown(
+            f"<div style='border-top: 1.3px solid gray; width:{TABLE_WIDTH}px; margin:3px 0;'></div>",
+            unsafe_allow_html=True
+        )
+
+        # 主表
+        st.dataframe(
+            other_rows_sorted[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
+                               "Per day", "Comments", "Weekly change"]],
+            column_config=bar_column_config,
+            hide_index=True,
+            use_container_width=False  # 🚫 不自动平分列宽
+        )
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
         # Bar分类商品项选择 - 使用与 high_level.py 相同的多选框样式
         st.markdown("<h4 style='font-size:16px; font-weight:700;'>📦 Bar Category Items</h4>", unsafe_allow_html=True)
@@ -906,7 +962,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         retail_df = retail_df.rename(columns={
             "Category": "Row Labels",
             "items_sold": "Sum of Items Sold",
-            "daily_sales": "Sum of Daily Sales",
+            "daily_sales_display": "Sum of Daily Sales",  # ✅ 改为用取整展示列
             "weekly_change": "Weekly change",
             "per_day": "Per day"
         })
@@ -915,7 +971,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
         # 创建总计行
         # === 修复：先用原始浮点数计算百分比，再四舍五入显示 ===
-        total_daily_sales_raw = retail_df["Sum of Daily Sales"].sum()
+        total_daily_sales_raw = retail_df["daily_sales_raw"].sum()
         total_prior_sales_raw = retail_df["prior_daily_sales"].sum()
         MIN_BASE = 50
         if total_prior_sales_raw > MIN_BASE:
@@ -956,28 +1012,80 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # Total 行始终放在最上方
         df_retail_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
 
-        st.dataframe(
-            df_retail_summary_sorted[['Row Labels', 'Sum of Items Sold', 'Sum of Daily Sales',
-                                      'Per day', 'Comments', 'Weekly change']],
-            column_config={
-                'Row Labels': st.column_config.Column(width="150px"),
-                'Sum of Items Sold': st.column_config.Column(width="130px"),
-                'Sum of Daily Sales': st.column_config.NumberColumn(
-                    width="140px",
-                    format="$%d"
-                ),
-                # ✅ Weekly change 保持 float，不转字符串，自动格式化百分比
-                'Weekly change': st.column_config.NumberColumn(
-                    width="120px",
-                    label="Weekly change",
-                    format="%.2f%%"
-                ),
-                'Per day': st.column_config.Column(width="100px"),
-                'Comments': st.column_config.Column(width="100px")
-            },
-            hide_index=True,
-            use_container_width=False
-        )
+        # === ✅ Retail Category: Total单独列出 + 灰线 + 保持列宽一致 ===
+        TABLE_WIDTH = 730  # 跟Bar保持一致
+
+        # === 拆分 Total 与其他行 ===
+        total_row_retail = df_retail_summary_sorted[df_retail_summary_sorted['Row Labels'] == 'Total']
+        other_rows_retail = df_retail_summary_sorted[df_retail_summary_sorted['Row Labels'] != 'Total']
+
+        # === 定义统一列宽配置（与Bar一致） ===
+        retail_column_config = {
+            "Row Labels": st.column_config.Column(width=130),
+            "Sum of Items Sold": st.column_config.Column(width=110),
+            "Sum of Daily Sales": st.column_config.NumberColumn(width=130, format="$%d"),
+            "Per day": st.column_config.Column(width=70),
+            "Comments": st.column_config.Column(width=240),
+            "Weekly change": st.column_config.NumberColumn(width=100, label="Weekly change", format="%.2f%%"),
+        }
+
+        # === CSS：强制两表等宽 ===
+        st.markdown(f"""
+        <style>
+        .retail-table-wrapper {{
+            width:{TABLE_WIDTH}px !important;
+            max-width:{TABLE_WIDTH}px !important;
+            margin: 0;
+            padding: 0;
+        }}
+        .retail-table-wrapper [data-testid="stDataFrame"] {{
+            width:{TABLE_WIDTH}px !important;
+            max-width:{TABLE_WIDTH}px !important;
+            min-width:{TABLE_WIDTH}px !important;
+            overflow-x:hidden !important;
+        }}
+        .retail-table-wrapper [data-testid="stDataFrame"] table {{
+            table-layout: fixed !important;
+            width:{TABLE_WIDTH}px !important;
+        }}
+        .retail-table-wrapper [data-testid="stDataFrame"] td,
+        .retail-table-wrapper [data-testid="stDataFrame"] th {{
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+
+        # === 两表放同一容器，锁定一致宽度 ===
+        with st.container():
+            st.markdown("<div class='retail-table-wrapper'>", unsafe_allow_html=True)
+
+            # --- Total表 ---
+            st.dataframe(
+                total_row_retail[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
+                                  "Per day", "Comments", "Weekly change"]],
+                column_config=retail_column_config,
+                hide_index=True,
+                use_container_width=False
+            )
+
+            # --- 灰线（与表完全等宽） ---
+            st.markdown(
+                f"<div style='border-top: 1.3px solid gray; width:{TABLE_WIDTH}px; margin:3px 0;'></div>",
+                unsafe_allow_html=True
+            )
+
+            # --- 主表 ---
+            st.dataframe(
+                other_rows_retail[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
+                                   "Per day", "Comments", "Weekly change"]],
+                column_config=retail_column_config,
+                hide_index=True,
+                use_container_width=False
+            )
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # Retail分类商品项选择 - 使用与 high_level.py 相同的多选框样式
         st.markdown("<h4 style='font-size:16px; font-weight:700;'>📦 Retail Category Items</h4>", unsafe_allow_html=True)
