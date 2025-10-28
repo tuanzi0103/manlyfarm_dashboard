@@ -261,8 +261,8 @@ def show_inventory(tx, inventory: pd.DataFrame):
     st.markdown("<h3 style='font-size:20px; font-weight:700;'>💰 Inventory Valuation Analysis</h3>",
                 unsafe_allow_html=True)
 
-    # === 修改：使用与 sales_report.py 相同的三列布局 ===
-    col_date, col_search, col_select, _ = st.columns([1, 1, 1.8, 3.5])
+    # === 修改：只保留日期选择框 ===
+    col_date, _, _, _ = st.columns([1, 1, 1.8, 3.5])
 
     with col_date:
         # 获取可用的日期（从库存数据中提取）
@@ -294,49 +294,6 @@ def show_inventory(tx, inventory: pd.DataFrame):
         # 将选择的日期转换回日期对象
         selected_date = pd.to_datetime(selected_date_formatted, format='%d/%m/%Y').date()
 
-    with col_search:
-        # 搜索关键词输入框
-        st.markdown("""
-        <style>
-        div[data-testid*="cat_search_term"] {
-            width: 25ch !important;
-            min-width: 25ch !important;
-        }
-        div[data-testid*="cat_search_term"] input {
-            width: 25ch !important;
-            min-width: 25ch !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        cat_search_term = st.text_input(
-            "🔍 Input",
-            placeholder="",
-            key="cat_search_term"
-        )
-
-    with col_select:
-        all_items = sorted(inv["Item Name"].fillna("Unknown").unique().tolist()) if "Item Name" in inv.columns else []
-        bar_cats = ["Café Drinks", "Smoothie bar", "Soups", "Sweet Treats", "Wrap & Salads"]
-
-        # 根据搜索词过滤选项
-        if cat_search_term:
-            search_lower = cat_search_term.lower()
-            filtered_options = [item for item in (all_items + ["bar", "retail"]) if
-                                search_lower in str(item).lower()]
-            item_count_text = f"{len(filtered_options)} categories"
-        else:
-            filtered_options = all_items + ["bar", "retail"]
-            item_count_text = f"{len(filtered_options)} items"
-
-        # === 修改：设置多选框宽度与输入框对齐 ===
-        categories = persisting_multiselect(
-            f"Select Items ({item_count_text})",
-            filtered_options,
-            key="inv_cats_box",
-            width_chars=25  # 设置为与输入框相同的宽度
-        )
-
     # 转换 selected_date 为 Timestamp 用于比较
     selected_date_ts = pd.Timestamp(selected_date)
 
@@ -346,177 +303,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
     t1 = None
     t2 = None
 
-    # ---- 📊 Selected Categories Table ----
-    if categories:
-        st.markdown("<h3 style='font-size:20px; font-weight:700;'>📊 Selected Categories Inventory</h3>",
-                    unsafe_allow_html=True)
-
-        # 获取选定日期的库存数据
-        if "source_date" in inv.columns or "date" in inv.columns:
-            date_col = "source_date" if "source_date" in inv.columns else "date"
-            inv_with_date = inv.copy()
-            inv_with_date[date_col] = pd.to_datetime(inv_with_date[date_col], errors="coerce")
-            # 筛选选定日期的数据
-            filtered_inv = inv_with_date[inv_with_date[date_col].dt.date == selected_date]
-        else:
-            filtered_inv = inv.copy()
-
-        # 根据选择的分类筛选数据
-        if "bar" in categories:
-            # 如果选择了bar，显示所有bar分类的商品
-            bar_items = filtered_inv[filtered_inv["Item Name"].isin(bar_cats)]
-            cat_filtered_inv = bar_items
-        elif "retail" in categories:
-            # 如果选择了retail，显示非bar分类的商品
-            retail_items = filtered_inv[~filtered_inv["Item Name"].isin(bar_cats)]
-            cat_filtered_inv = retail_items
-        else:
-            # 显示具体选择的分类
-            cat_filtered_inv = filtered_inv[filtered_inv["Item Name"].isin(categories)]
-
-        if not cat_filtered_inv.empty:
-            # 准备显示数据 - 使用与Low Stock Alerts相同的列格式
-            display_df = cat_filtered_inv.copy()
-
-            # 确保数值列是数字类型
-            display_df["Current Quantity Vie Market & Bar"] = pd.to_numeric(
-                display_df["Current Quantity Vie Market & Bar"], errors="coerce").fillna(0)
-            display_df["Price"] = pd.to_numeric(display_df["Price"], errors="coerce").fillna(0)
-            display_df["Default Unit Cost"] = pd.to_numeric(display_df["Default Unit Cost"], errors="coerce").fillna(0)
-
-            # 计算 Total Inventory (使用绝对值)
-            display_df["Total Inventory"] = display_df["Default Unit Cost"] * abs(
-                display_df["Current Quantity Vie Market & Bar"])
-
-            # 计算 Total Retail
-            def calc_retail(row):
-                O, AA, tax = row["Price"], abs(row["Current Quantity Vie Market & Bar"]), str(
-                    row["Tax - GST (10%)"]).strip().upper()
-                return (O / 11 * 10) * AA if tax == "Y" else O * AA
-
-            display_df["Total Retail"] = display_df.apply(calc_retail, axis=1)
-
-            # 计算 Profit
-            display_df["Profit"] = display_df["Total Retail"] - display_df["Total Inventory"]
-
-            # 所有数值列先四舍五入处理浮点数精度问题
-            display_df["Total Inventory"] = display_df["Total Inventory"].round(2)
-            display_df["Total Retail"] = display_df["Total Retail"].round(2)
-            display_df["Profit"] = display_df["Profit"].round(2)
-
-            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
-            def safe_profit_margin(row):
-                if row["Total Retail"] == 0:
-                    return "-"
-                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
-                return f"{profit_margin:.1f}%"
-
-            display_df["Profit Margin"] = display_df.apply(safe_profit_margin, axis=1)
-
-            # 计算过去4周的Net Sales
-            selected_date_ts = pd.Timestamp(selected_date)
-
-            # === 新逻辑：按 Item Name 连接 transaction 表 ===
-            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
-            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
-            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
-
-            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
-            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
-
-            item_sales_4w = (
-                recent_tx.groupby("Item")["Net Sales"]
-                .sum()
-                .reset_index()
-                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
-            )
-
-            display_df = display_df.merge(item_sales_4w, on="Item Name", how="left")
-            display_df["Velocity"] = display_df.apply(
-                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
-                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
-                else "-",
-                axis=1
-            )
-
-            vel_numeric = pd.to_numeric(display_df["Velocity"], errors="coerce")
-            display_df["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), display_df["Velocity"])
-
-            # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
-            display_df = display_df.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
-
-            # === 修改：所有 Current Quantity 展示绝对值 ===
-            display_df["Current Quantity"] = display_df["Current Quantity"].abs()
-
-            # 选择要显示的列
-            display_columns = []
-            if "Item Name" in display_df.columns:
-                display_columns.append("Item Name")
-            if "Item Variation Name" in display_df.columns:
-                display_columns.append("Item Variation Name")
-            if "SKU" in display_df.columns:
-                display_columns.append("SKU")
-
-            display_columns.extend(
-                ["Current Quantity", "Total Inventory", "Total Retail", "Profit", "Profit Margin", "Velocity"])
-
-            # 确保 SKU 列完整显示（不使用科学记数法）
-            if "SKU" in display_df.columns:
-                display_df["SKU"] = display_df["SKU"].astype(str)
-
-            # 特殊处理：Velocity 为0、无限大、空值或无效值用 '-' 替换
-            def clean_velocity(x):
-                if pd.isna(x) or x == 0 or x == float('inf') or x == float('-inf'):
-                    return '-'
-                return x
-
-            display_df["Velocity"] = display_df["Velocity"].apply(clean_velocity)
-
-            # === 确保数值列为float，0显示为NaN用于显示'–' ===
-            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
-                display_df[c] = pd.to_numeric(display_df[c], errors="coerce")
-                display_df.loc[display_df[c].fillna(0) == 0, c] = pd.NA
-
-            # ✅ Profit Margin 特殊处理（去掉%、转float、保持NaN用于显示‘–’）
-            if "Profit Margin" in display_df.columns:
-                display_df["Profit Margin"] = (
-                    display_df["Profit Margin"]
-                    .astype(str)
-                    .str.replace("%", "", regex=False)
-                    .replace("-", None)
-                )
-                display_df["Profit Margin"] = pd.to_numeric(display_df["Profit Margin"], errors="coerce")
-                display_df.loc[display_df["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
-
-            # 其他空值用字符 '-' 替换
-            for col in display_columns:
-                if col in display_df.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
-                        display_df[col] = display_df[col].fillna('-')
-
-            column_config = {
-                'Item Name': st.column_config.Column(width=150),
-                'Item Variation Name': st.column_config.Column(width=50),
-                'SKU': st.column_config.Column(width=100),
-                'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
-                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
-                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
-                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
-                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
-            }
-
-            st.dataframe(
-                display_df[display_columns],
-                column_config=column_config,
-                use_container_width=False
-            )
-        else:
-            st.info("No items found for selected categories on the chosen date.")
-
-    # ---- 📊 Inventory Summary Table - 参考 Summary Table 格式 ----
-    st.markdown("<h3 style='font-size:20px; font-weight:700;'>📊 Inventory Summary</h3>", unsafe_allow_html=True)
-
+    # ---- Inventory Summary Table ----
     # 获取选定日期的库存数据
     if "source_date" in inv.columns or "date" in inv.columns:
         date_col = "source_date" if "source_date" in inv.columns else "date"
@@ -533,26 +320,22 @@ def show_inventory(tx, inventory: pd.DataFrame):
         f"<h4 style='font-size:16px; font-weight:700;'>Selected Date: {selected_date.strftime('%d/%m/%Y')}</h4>",
         unsafe_allow_html=True)
 
-    # 创建类似 Summary Table 格式的数据框
+    # === 修改：Selected Date 横向展示 ===
     summary_table_data = {
-        'Metric': ['Total Inventory Value', 'Total Retail Value', 'Profit', 'Profit Margin'],
-        'Value': [
-            f"${summary_data['Total Inventory Value']:,}",
-            f"${summary_data['Total Retail Value']:,}",
-            f"${summary_data['Profit']:,}",
-            summary_data['Profit Margin']
-        ]
+        'Total Inventory Value': [f"${summary_data['Total Inventory Value']:,}"],
+        'Total Retail Value': [f"${summary_data['Total Retail Value']:,}"],
+        'Profit': [f"${summary_data['Profit']:,}"],
+        'Profit Margin': [summary_data['Profit Margin']]
     }
-
     df_summary = pd.DataFrame(summary_table_data)
 
-    # 设置列配置 - 参考 sales_report 格式，不强制占满一行
     column_config = {
-        'Metric': st.column_config.Column(width=135),
-        'Value': st.column_config.Column(width=70),
+        'Total Inventory Value': st.column_config.Column(width=140),
+        'Total Retail Value': st.column_config.Column(width=110),
+        'Profit': st.column_config.Column(width=60),
+        'Profit Margin': st.column_config.Column(width=90),
     }
 
-    # 显示表格
     st.dataframe(
         df_summary,
         column_config=column_config,
@@ -562,479 +345,17 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
     st.markdown("---")
 
-    # ---- 1) Inventory Diagnosis: Restock / Clearance ----
-    st.markdown("<h3 style='font-size:20px; font-weight:700;'>1) Inventory Diagnosis: Restock / Clearance Needed</h3>",
-                unsafe_allow_html=True)
-    qty_col = detect_store_current_qty_col(inv)
+    # === 修改：将Low Stock Alerts的内容移动到Summary Table下面 ===
 
-    item_col = "Item Name" if "Item Name" in inv.columns else "Item"
-    variation_col = "Item Variation Name" if "Item Variation Name" in inv.columns else None
-    sku_col = "SKU" if "SKU" in inv.columns else None
-
-    if variation_col:
-        inv["display_name"] = inv[item_col].astype(str) + " - " + inv[variation_col].astype(str)
-    else:
-        inv["display_name"] = inv[item_col].astype(str)
-
-    if sku_col:
-        inv["option_key"] = inv["display_name"] + " (SKU:" + inv[sku_col].astype(str) + ")"
-    else:
-        inv["option_key"] = inv["display_name"]
-
-    # === 生成补货表 ===
-    need_restock = filtered_inv.copy()
-
-    # ✅ 确保存在 option_key 列
-    if "option_key" not in need_restock.columns:
-        if "Item Name" in need_restock.columns:
-            item_col = "Item Name"
-        else:
-            item_col = "Item"
-        variation_col = "Item Variation Name" if "Item Variation Name" in need_restock.columns else None
-        sku_col = "SKU" if "SKU" in need_restock.columns else None
-
-        if variation_col:
-            need_restock["display_name"] = need_restock[item_col].astype(str) + " - " + need_restock[
-                variation_col].astype(str)
-        else:
-            need_restock["display_name"] = need_restock[item_col].astype(str)
-
-        if sku_col:
-            need_restock["option_key"] = need_restock["display_name"] + " (SKU:" + need_restock[sku_col].astype(
-                str) + ")"
-        else:
-            need_restock["option_key"] = need_restock["display_name"]
-
-    need_restock = need_restock[pd.notna(pd.to_numeric(need_restock[qty_col], errors="coerce"))].copy()
-
-    if not need_restock.empty:
-        options = sorted(need_restock["option_key"].unique())
-
-        # === 修改：添加空白行确保水平对齐 ===
-        st.markdown("<div style='margin-top: 0.5rem;'></div>", unsafe_allow_html=True)
-
-        # === 修改：参考 sales_report 的布局，使用三列布局 ===
-        col_select_restock, col_threshold_restock, _ = st.columns([1.8, 1, 4.2])
-
-        with col_select_restock:
-            selected_items = persisting_multiselect(
-                f"Select Items ({len(options)} items)",
-                options,
-                key="restock_filter",
-                default=[],
-                width_chars=25  # 与输入框对齐
-            )
-
-        with col_threshold_restock:
-            # === 修改：添加空白标签确保垂直对齐 ===
-            st.markdown("<div style='margin-top: 1.2rem;'></div>", unsafe_allow_html=True)
-
-            # === 修改：改为单选框，直接输入数字作为阈值 ===
-            max_qty = int(need_restock[qty_col].abs().max())
-            threshold_value = st.number_input(
-                "Current Quantity ≤",
-                min_value=0,
-                max_value=max_qty,
-                value=max_qty,
-                key="restock_threshold",
-                help="Enter threshold value"
-            )
-
-        df_show = need_restock.copy()
-        # ✅ 使用缺货数量的绝对值
-        df_show["restock_needed"] = pd.to_numeric(df_show[qty_col], errors="coerce").fillna(0).abs()
-
-        if selected_items:
-            selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]
-            if selected_skus:
-                df_show = df_show[df_show["SKU"].astype(str).isin(selected_skus)]
-            else:
-                df_show = df_show[df_show["display_name"].isin(selected_items)]
-
-        if not df_show.empty:
-            # === 修改：准备显示数据，参考 Low Stock Alerts 格式 ===
-            display_restock = df_show.copy()
-            # 应用阈值筛选：显示所有小于等于阈值的记录（包括负数和0）
-            display_restock = display_restock[
-                pd.to_numeric(display_restock[qty_col], errors="coerce").fillna(0) <= threshold_value]
-
-            # 确保数值列是数字类型
-            display_restock["Current Quantity Vie Market & Bar"] = pd.to_numeric(
-                display_restock["Current Quantity Vie Market & Bar"], errors="coerce").fillna(0)
-            display_restock["Price"] = pd.to_numeric(display_restock["Price"], errors="coerce").fillna(0)
-            display_restock["Default Unit Cost"] = pd.to_numeric(display_restock["Default Unit Cost"],
-                                                                 errors="coerce").fillna(0)
-
-            # 计算 Total Inventory (使用绝对值)
-            display_restock["Total Inventory"] = display_restock["Default Unit Cost"] * abs(
-                display_restock["Current Quantity Vie Market & Bar"])
-
-            # 计算 Total Retail
-            def calc_retail(row):
-                O, AA, tax = row["Price"], abs(row["Current Quantity Vie Market & Bar"]), str(
-                    row["Tax - GST (10%)"]).strip().upper()
-                return (O / 11 * 10) * AA if tax == "Y" else O * AA
-
-            display_restock["Total Retail"] = display_restock.apply(calc_retail, axis=1)
-
-            # 计算 Profit
-            display_restock["Profit"] = display_restock["Total Retail"] - display_restock["Total Inventory"]
-
-            # 所有数值列先四舍五入处理浮点数精度问题
-            display_restock["Total Inventory"] = display_restock["Total Inventory"].round(2)
-            display_restock["Total Retail"] = display_restock["Total Retail"].round(2)
-            display_restock["Profit"] = display_restock["Profit"].round(2)
-
-            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
-            def safe_profit_margin(row):
-                if row["Total Retail"] == 0:
-                    return "-"
-                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
-                return f"{profit_margin:.1f}%"
-
-            display_restock["Profit Margin"] = display_restock.apply(safe_profit_margin, axis=1)
-
-            # 计算过去4周的Net Sales
-            selected_date_ts = pd.Timestamp(selected_date)
-
-            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
-            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
-            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
-
-            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
-            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
-
-            item_sales_4w = (
-                recent_tx.groupby("Item")["Net Sales"]
-                .sum()
-                .reset_index()
-                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
-            )
-
-            display_restock = display_restock.merge(item_sales_4w, on="Item Name", how="left")
-            display_restock["Velocity"] = display_restock.apply(
-                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
-                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
-                else "-",
-                axis=1
-            )
-
-            # Velocity 四舍五入保留一位小数
-            vel_numeric = pd.to_numeric(display_restock["Velocity"], errors="coerce")
-            display_restock["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), display_restock["Velocity"])
-
-            # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
-            display_restock = display_restock.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
-
-            # === 修改：所有 Current Quantity 展示绝对值 ===
-            #display_restock["Current Quantity"] = display_restock["Current Quantity"].abs()
-
-            # 选择要显示的列
-            display_columns = []
-            if "Item Name" in display_restock.columns:
-                display_columns.append("Item Name")
-            if "Item Variation Name" in display_restock.columns:
-                display_columns.append("Item Variation Name")
-            if "SKU" in display_restock.columns:
-                display_columns.append("SKU")
-
-            display_columns.extend(
-                ["Current Quantity", "Total Inventory", "Total Retail", "Profit", "Profit Margin", "Velocity"])
-
-            # 确保 SKU 列完整显示（不使用科学记数法）
-            if "SKU" in display_restock.columns:
-                display_restock["SKU"] = display_restock["SKU"].astype(str)
-
-            # 特殊处理：Velocity 为0、无限大、空值或无效值用 '-' 替换
-            def clean_velocity(x):
-                if pd.isna(x) or x == 0 or x == float('inf') or x == float('-inf'):
-                    return '-'
-                return x
-
-            display_restock["Velocity"] = display_restock["Velocity"].apply(clean_velocity)
-
-            # === 保持float并用NaN替代0以显示'–'，不影响数值排序 ===
-            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
-                display_restock[c] = pd.to_numeric(display_restock[c], errors="coerce")
-                display_restock.loc[display_restock[c].fillna(0) == 0, c] = pd.NA
-
-            # ✅ Profit Margin 特殊处理
-            if "Profit Margin" in display_restock.columns:
-                display_restock["Profit Margin"] = (
-                    display_restock["Profit Margin"]
-                    .astype(str)
-                    .str.replace("%", "", regex=False)
-                    .replace("-", None)
-                )
-                display_restock["Profit Margin"] = pd.to_numeric(display_restock["Profit Margin"], errors="coerce")
-                display_restock.loc[display_restock["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
-
-            # 其他空值用字符 '-' 替换
-            for col in display_columns:
-                if col in display_restock.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
-                        display_restock[col] = display_restock[col].fillna('-')
-
-            # === 修改：设置列宽配置，参考 sales_report 格式 ===
-            column_config = {
-                'Item Name': st.column_config.Column(width=150),
-                'Item Variation Name': st.column_config.Column(width=50),
-                'SKU': st.column_config.Column(width=100),
-                'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
-                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
-                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
-                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
-                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
-            }
-
-            st.dataframe(
-                display_restock[display_columns],
-                column_config=column_config,
-                use_container_width=False
-            )
-        else:
-            st.info("No matching items to restock.")
-    else:
-        st.success("No items need restocking.")
-
-    clear_threshold = 50
-    # === 生成需要清仓表（high stock items） ===
-    need_clear = filtered_inv.copy()
-
-    # ✅ 确保存在 option_key 列
-    if "option_key" not in need_clear.columns:
-        if "Item Name" in need_clear.columns:
-            item_col = "Item Name"
-        else:
-            item_col = "Item"
-        variation_col = "Item Variation Name" if "Item Variation Name" in need_clear.columns else None
-        sku_col = "SKU" if "SKU" in need_clear.columns else None
-
-        if variation_col:
-            need_clear["display_name"] = need_clear[item_col].astype(str) + " - " + need_clear[variation_col].astype(
-                str)
-        else:
-            need_clear["display_name"] = need_clear[item_col].astype(str)
-
-        if sku_col:
-            need_clear["option_key"] = need_clear["display_name"] + " (SKU:" + need_clear[sku_col].astype(str) + ")"
-        else:
-            need_clear["option_key"] = need_clear["display_name"]
-
-    # ✅ 过滤大库存行（例如超过 clear_threshold）
-    need_clear = need_clear[pd.to_numeric(need_clear[qty_col], errors="coerce").fillna(0) >= clear_threshold].copy()
-
-    if not need_clear.empty:
-        options = sorted(need_clear["option_key"].unique())
-
-        # === 修改：添加空白行确保水平对齐 ===
-        st.markdown("<div style='margin-top: 0.5rem;'></div>", unsafe_allow_html=True)
-
-        # === 修改：参考 sales_report 的布局，使用三列布局 ===
-        col_select_clear, col_threshold_clear, _ = st.columns([1.8, 1, 4.2])
-
-        with col_select_clear:
-            selected_items = persisting_multiselect(
-                f"Select Items ({len(options)} items)",
-                options,
-                key="clear_filter",
-                default=[],
-                width_chars=25  # 与输入框对齐
-            )
-
-        with col_threshold_clear:
-            # === 修改：添加空白标签确保垂直对齐 ===
-            st.markdown("<div style='margin-top: 1.2rem;'></div>", unsafe_allow_html=True)
-
-            # === 修改：改为单选框，直接输入数字作为阈值 ===
-            max_qty = int(need_clear[qty_col].max())
-            threshold_value = st.number_input(
-                "Current Quantity ≥",
-                min_value=clear_threshold,
-                max_value=max_qty,
-                value=clear_threshold,
-                key="clear_threshold",
-                help="Enter threshold value"
-            )
-
-        df_clear = need_clear.copy()
-        df_clear["current_qty"] = pd.to_numeric(df_clear[qty_col], errors="coerce").fillna(0)
-
-        # 应用阈值筛选 - 筛选大于等于输入值的项目
-        df_clear = df_clear[df_clear["current_qty"] >= threshold_value]
-
-        if selected_items:
-            selected_skus = [opt.split("SKU:")[1].replace(")", "") for opt in selected_items if "SKU:" in opt]
-            if selected_skus:
-                df_clear = df_clear[df_clear["SKU"].astype(str).isin(selected_skus)]
-            else:
-                df_clear = df_clear[df_clear["display_name"].isin(selected_items)]
-
-        if not df_clear.empty:
-            # === 修改：只展示top10的items，图表宽度为一半 ===
-            top_10_clear = df_clear.nlargest(10, "current_qty")
-            fig_clear = px.bar(top_10_clear, x="display_name", y="current_qty",
-                               title="Items Needing Clearance (units) - Top 10",
-                               labels={"current_qty": "Stock Quantity (units)", "display_name": "Item Name"})
-            fig_clear.update_layout(width=600)  # 设置图表宽度为现在的一半
-            st.plotly_chart(fig_clear, use_container_width=False)
-
-            # 计算所需的列
-            df_clear_display = df_clear.copy()
-
-            # 确保数值列是数字类型
-            df_clear_display["Current Quantity Vie Market & Bar"] = pd.to_numeric(
-                df_clear_display["Current Quantity Vie Market & Bar"], errors="coerce").fillna(0)
-            df_clear_display["Price"] = pd.to_numeric(df_clear_display["Price"], errors="coerce").fillna(0)
-            df_clear_display["Default Unit Cost"] = pd.to_numeric(df_clear_display["Default Unit Cost"],
-                                                                  errors="coerce").fillna(0)
-
-            # 计算 Total Inventory (使用绝对值)
-            df_clear_display["Total Inventory"] = df_clear_display["Default Unit Cost"] * abs(
-                df_clear_display["Current Quantity Vie Market & Bar"])
-
-            # 计算 Total Retail
-            def calc_retail(row):
-                O, AA, tax = row["Price"], abs(row["Current Quantity Vie Market & Bar"]), str(
-                    row["Tax - GST (10%)"]).strip().upper()
-                return (O / 11 * 10) * AA if tax == "Y" else O * AA
-
-            df_clear_display["Total Retail"] = df_clear_display.apply(calc_retail, axis=1)
-
-            # 计算 Profit
-            df_clear_display["Profit"] = df_clear_display["Total Retail"] - df_clear_display["Total Inventory"]
-
-            # 所有数值列先四舍五入处理浮点数精度问题
-            df_clear_display["Total Inventory"] = df_clear_display["Total Inventory"].round(2)
-            df_clear_display["Total Retail"] = df_clear_display["Total Retail"].round(2)
-            df_clear_display["Profit"] = df_clear_display["Profit"].round(2)
-
-            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
-            def safe_profit_margin(row):
-                if row["Total Retail"] == 0:
-                    return "-"
-                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
-                return f"{profit_margin:.1f}%"
-
-            df_clear_display["Profit Margin"] = df_clear_display.apply(safe_profit_margin, axis=1)
-
-            # 计算过去4周的Net Sales
-            selected_date_ts = pd.Timestamp(selected_date)
-
-            tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
-            past_4w_start = selected_date_ts - pd.Timedelta(days=28)
-            recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
-
-            recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
-            recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
-
-            item_sales_4w = (
-                recent_tx.groupby("Item")["Net Sales"]
-                .sum()
-                .reset_index()
-                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
-            )
-
-            df_clear_display = df_clear_display.merge(item_sales_4w, on="Item Name", how="left")
-            df_clear_display["Velocity"] = df_clear_display.apply(
-                lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
-                if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
-                else "-",
-                axis=1
-            )
-
-            vel_numeric = pd.to_numeric(df_clear_display["Velocity"], errors="coerce")
-            df_clear_display["Velocity"] = vel_numeric.round(1).where(vel_numeric.notna(), df_clear_display["Velocity"])
-
-            # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
-            df_clear_display = df_clear_display.rename(
-                columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
-
-            # === 修改：所有 Current Quantity 展示绝对值 ===
-            df_clear_display["Current Quantity"] = df_clear_display["Current Quantity"].abs()
-
-            # 选择要显示的列
-            display_columns = []
-            if "Item Name" in df_clear_display.columns:
-                display_columns.append("Item Name")
-            if "Item Variation Name" in df_clear_display.columns:
-                display_columns.append("Item Variation Name")
-            if "SKU" in df_clear_display.columns:
-                display_columns.append("SKU")
-
-            display_columns.extend(
-                ["Current Quantity", "Total Inventory", "Total Retail", "Profit", "Profit Margin", "Velocity"])
-
-            # 确保 SKU 列完整显示（不使用科学记数法）
-            if "SKU" in df_clear_display.columns:
-                df_clear_display["SKU"] = df_clear_display["SKU"].astype(str)
-
-            # 特殊处理：Velocity 为0、无限大、空值或无效值用 '-' 替换
-            def clean_velocity(x):
-                if pd.isna(x) or x == 0 or x == float('inf') or x == float('-inf'):
-                    return '-'
-                return x
-
-            df_clear_display["Velocity"] = df_clear_display["Velocity"].apply(clean_velocity)
-
-            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
-                df_clear_display[c] = pd.to_numeric(df_clear_display[c], errors="coerce")
-                df_clear_display.loc[df_clear_display[c].fillna(0) == 0, c] = pd.NA
-
-            if "Profit Margin" in df_clear_display.columns:
-                df_clear_display["Profit Margin"] = (
-                    df_clear_display["Profit Margin"]
-                    .astype(str)
-                    .str.replace("%", "", regex=False)
-                    .replace("-", None)
-                )
-                df_clear_display["Profit Margin"] = pd.to_numeric(df_clear_display["Profit Margin"], errors="coerce")
-                df_clear_display.loc[df_clear_display["Profit Margin"].fillna(0) == 0, "Profit Margin"] = pd.NA
-
-            # 其他空值用字符 '-' 替换
-            for col in display_columns:
-                if col in df_clear_display.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
-                        df_clear_display[col] = df_clear_display[col].fillna('-')
-
-            column_config = {
-                'Item Name': st.column_config.Column(width=150),
-                'Item Variation Name': st.column_config.Column(width=50),
-                'SKU': st.column_config.Column(width=100),
-                'Current Quantity': st.column_config.Column(width=110),
-                'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
-                'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
-                'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
-                'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
-                'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
-            }
-
-            st.dataframe(
-                df_clear_display[display_columns],
-                column_config=column_config,
-                use_container_width=False
-            )
-        else:
-            st.info("No matching items needing clearance.")
-    else:
-        st.success("No items need clearance.")
-
-    st.markdown("---")
-
-    # ---- 2) Low Stock Alerts ----
-    st.markdown("<h3 style='font-size:20px; font-weight:700;'>2) Low Stock Alerts</h3>", unsafe_allow_html=True)
-
+    # ---- Low Stock Alerts ----
     # === 生成低库存表 ===
     low_stock = filtered_inv.copy()
+    qty_col = detect_store_current_qty_col(inv)
 
     # ✅ 确保存在 option_key 列
     if "option_key" not in low_stock.columns:
-        if "Item Name" in low_stock.columns:
-            item_col = "Item Name"
-        else:
-            item_col = "Item"
-        variation_col = "Item Variation Name" if "Item Variation Name" in low_stock.columns else None
+        item_col = "Item Name" if "Item Name" in low_stock.columns else "Item"
+        variation_col = "Variation Name" if "Variation Name" in low_stock.columns else None
         sku_col = "SKU" if "SKU" in low_stock.columns else None
 
         if variation_col:
@@ -1052,8 +373,8 @@ def show_inventory(tx, inventory: pd.DataFrame):
     if not low_stock.empty:
         options = sorted(low_stock["option_key"].unique())
 
-        # === 修改：参考 Inventory Valuation Analysis 的布局，使用四列布局 ===
-        col_search_low, col_select_low, col_threshold_low, _ = st.columns([1, 1.8, 1, 3.2])
+        # === 修改：参考 Inventory Valuation Analysis 的布局，使用五列布局 ===
+        col_search_low, col_select_low, col_threshold_low, col_threshold_high, _ = st.columns([1, 1.8, 1, 1, 2.2])
 
         with col_search_low:
             st.markdown("<div style='margin-top: 1.0rem;'></div>", unsafe_allow_html=True)
@@ -1083,18 +404,31 @@ def show_inventory(tx, inventory: pd.DataFrame):
             )
 
         with col_threshold_low:
-            #current quantity
+            # Current Quantity ≤
             st.markdown("<div style='margin-top: 1.2rem;'></div>", unsafe_allow_html=True)
 
             # === 修改：改为单选框，直接输入数字作为阈值 ===
             max_qty = int(low_stock[qty_col].max())
-            threshold_value = st.number_input(
+            threshold_low_value = st.number_input(
                 "Current Quantity ≤",
                 min_value=1,
                 max_value=20,
                 value=20,
-                key="low_stock_threshold",
-                help="Enter threshold value"
+                key="low_stock_threshold_low",
+                help="Enter threshold value for low stock"
+            )
+
+        with col_threshold_high:
+            # === 新增：Current Quantity ≥ 多选框 ===
+            st.markdown("<div style='margin-top: 1.2rem;'></div>", unsafe_allow_html=True)
+
+            threshold_high_value = st.number_input(
+                "Current Quantity ≥",
+                min_value=0,
+                max_value=100,
+                value=0,
+                key="low_stock_threshold_high",
+                help="Enter threshold value for high stock"
             )
 
         df_low = low_stock.copy()
@@ -1108,18 +442,18 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 df_low = df_low[df_low["display_name"].isin(selected_items)]
 
         if not df_low.empty:
-            # === 修改：添加top10的柱形图 ===
-            top_10_low = df_low.nlargest(10, "current_qty")
-            fig_low = px.bar(top_10_low, x="display_name", y="current_qty",
-                             title="Low Stock Items (units) - Top 10",
-                             labels={"current_qty": "Stock Quantity (units)", "display_name": "Item Name"})
-            fig_low.update_layout(width=600)  # 设置图表宽度
-            st.plotly_chart(fig_low, use_container_width=False)
-
             df_low_display = df_low.copy()
-            # 应用阈值筛选：显示所有小于等于阈值的记录（包括负数和0）
-            df_low_display = df_low_display[
-                pd.to_numeric(df_low_display[qty_col], errors="coerce").fillna(0) <= threshold_value]
+
+            # 应用阈值筛选：同时应用 ≤ 和 ≥ 条件
+            current_qty_numeric = pd.to_numeric(df_low_display[qty_col], errors="coerce").fillna(0)
+
+            # 应用 ≤ 条件
+            if threshold_low_value > 0:
+                df_low_display = df_low_display[current_qty_numeric <= threshold_low_value]
+
+            # 应用 ≥ 条件
+            if threshold_high_value > 0:
+                df_low_display = df_low_display[current_qty_numeric >= threshold_high_value]
 
             # 确保数值列是数字类型
             df_low_display["Current Quantity Vie Market & Bar"] = pd.to_numeric(
@@ -1148,34 +482,93 @@ def show_inventory(tx, inventory: pd.DataFrame):
             df_low_display["Total Retail"] = df_low_display["Total Retail"].round(2)
             df_low_display["Profit"] = df_low_display["Profit"].round(2)
 
-            # === 修复：计算 Profit Margin 前过滤零值的 Total Retail ===
-            def safe_profit_margin(row):
-                if row["Total Retail"] == 0:
-                    return "-"
-                profit_margin = (row["Profit"] / row["Total Retail"] * 100)
-                return f"{profit_margin:.1f}%"
+            # === 修改：Profit Margin 始终计算，即使没有库存或总值 ===
+            def calc_profit_margin(row):
+                try:
+                    unit_cost = float(row.get("Default Unit Cost", 0))
+                    price = float(row.get("Price", 0))
+                    tax = str(row.get("Tax - GST (10%)", "")).strip().upper()
 
-            df_low_display["Profit Margin"] = df_low_display.apply(safe_profit_margin, axis=1)
+                    # 按单价计算，不依赖数量或总额
+                    effective_price = (price / 11 * 10) if tax == "Y" else price
+                    if effective_price == 0:
+                        return "0.0%"
+                    profit = effective_price - unit_cost
+                    profit_margin = (profit / effective_price) * 100
+                    return f"{profit_margin:.1f}%"
+                except Exception:
+                    return "0.0%"
+
+            df_low_display["Profit Margin"] = df_low_display.apply(calc_profit_margin, axis=1)
 
             # 计算过去4周的Net Sales
             selected_date_ts = pd.Timestamp(selected_date)
 
-            # === 新 Velocity 逻辑：按 Item Name 连接 transaction 表 ===
+            # === 修改：按 Item Name 和 Variation Name 连接 transaction 表 ===
             tx["Datetime"] = pd.to_datetime(tx["Datetime"], errors="coerce")
             past_4w_start = selected_date_ts - pd.Timedelta(days=28)
             recent_tx = tx[(tx["Datetime"] >= past_4w_start) & (tx["Datetime"] <= selected_date_ts)].copy()
 
             recent_tx["Item"] = recent_tx["Item"].astype(str).str.strip()
+            recent_tx["Price Point Name"] = recent_tx["Price Point Name"].astype(str).str.strip()
             recent_tx["Net Sales"] = pd.to_numeric(recent_tx["Net Sales"], errors="coerce").fillna(0)
 
+            # 按 Item Name 和 Price Point Name 分组计算销售额
             item_sales_4w = (
-                recent_tx.groupby("Item")["Net Sales"]
+                recent_tx.groupby(["Item", "Price Point Name"])["Net Sales"]
                 .sum()
                 .reset_index()
-                .rename(columns={"Item": "Item Name", "Net Sales": "Net Sale 4W"})
+                .rename(columns={"Item": "Item Name", "Price Point Name": "Variation Name",
+                                 "Net Sales": "Net Sale 4W"})
             )
 
-            df_low_display = df_low_display.merge(item_sales_4w, on="Item Name", how="left")
+            # === 新增：计算过去3个月和6个月的销售额 ===
+            past_3m_start = selected_date_ts - pd.Timedelta(days=90)
+            past_6m_start = selected_date_ts - pd.Timedelta(days=180)
+
+            # 过去3个月销售额 - 按 Item Name 和 Price Point Name 分组
+            tx_3m = tx[(tx["Datetime"] >= past_3m_start) & (tx["Datetime"] <= selected_date_ts)].copy()
+            tx_3m["Net Sales"] = pd.to_numeric(tx_3m["Net Sales"], errors="coerce").fillna(0)
+            tx_3m["Item"] = tx_3m["Item"].astype(str).str.strip()
+            tx_3m["Price Point Name"] = tx_3m["Price Point Name"].astype(str).str.strip()
+            item_sales_3m = (
+                tx_3m.groupby(["Item", "Price Point Name"])["Net Sales"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Item": "Item Name", "Price Point Name": "Variation Name",
+                                 "Net Sales": "Last 3 Months Sales"})
+            )
+
+            # 过去6个月销售额 - 按 Item Name 和 Price Point Name 分组
+            tx_6m = tx[(tx["Datetime"] >= past_6m_start) & (tx["Datetime"] <= selected_date_ts)].copy()
+            tx_6m["Net Sales"] = pd.to_numeric(tx_6m["Net Sales"], errors="coerce").fillna(0)
+            tx_6m["Item"] = tx_6m["Item"].astype(str).str.strip()
+            tx_6m["Price Point Name"] = tx_6m["Price Point Name"].astype(str).str.strip()
+            item_sales_6m = (
+                tx_6m.groupby(["Item", "Price Point Name"])["Net Sales"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Item": "Item Name", "Price Point Name": "Variation Name",
+                                 "Net Sales": "Last 6 Months Sales"})
+            )
+
+            # 合并所有销售数据 - 使用 Item Name 和 Variation Name 作为连接键
+            df_low_display = df_low_display.merge(
+                item_sales_4w,
+                on=["Item Name", "Variation Name"],
+                how="left"
+            )
+            df_low_display = df_low_display.merge(
+                item_sales_3m,
+                on=["Item Name", "Variation Name"],
+                how="left"
+            )
+            df_low_display = df_low_display.merge(
+                item_sales_6m,
+                on=["Item Name", "Variation Name"],
+                how="left"
+            )
+
             df_low_display["Velocity"] = df_low_display.apply(
                 lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
                 if pd.notna(r["Net Sale 4W"]) and r["Net Sale 4W"] > 0
@@ -1190,24 +583,16 @@ def show_inventory(tx, inventory: pd.DataFrame):
             # 重命名 Current Quantity Vie Market & Bar 列为 Current Quantity
             df_low_display = df_low_display.rename(columns={"Current Quantity Vie Market & Bar": "Current Quantity"})
 
-            # === 修改：所有 Current Quantity 展示绝对值 ===
-            df_low_display["Current Quantity"] = df_low_display["Current Quantity"].abs()
-
-            # 选择要显示的列
+            # 选择要显示的列 - 在 Item Name 右边添加 Variation Name
             display_columns = []
             if "Item Name" in df_low_display.columns:
                 display_columns.append("Item Name")
-            if "Item Variation Name" in df_low_display.columns:
-                display_columns.append("Item Variation Name")
-            if "SKU" in df_low_display.columns:
-                display_columns.append("SKU")
+            if "Variation Name" in df_low_display.columns:
+                display_columns.append("Variation Name")
 
             display_columns.extend(
-                ["Current Quantity", "Total Inventory", "Total Retail", "Profit", "Profit Margin", "Velocity"])
-
-            # 确保 SKU 列完整显示（不使用科学记数法）
-            if "SKU" in df_low_display.columns:
-                df_low_display["SKU"] = df_low_display["SKU"].astype(str)
+                ["Current Quantity", "Total Inventory", "Total Retail", "Profit", "Profit Margin", "Velocity",
+                 "Last 3 Months Sales", "Last 6 Months Sales"])
 
             # 特殊处理：Velocity 为0、无限大、空值或无效值用 '-' 替换
             def clean_velocity(x):
@@ -1218,7 +603,8 @@ def show_inventory(tx, inventory: pd.DataFrame):
             df_low_display["Velocity"] = df_low_display["Velocity"].apply(clean_velocity)
 
             # === 保持float，0→NaN，显示'–'，不影响排序 ===
-            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity"]:
+            for c in ["Total Inventory", "Total Retail", "Profit", "Velocity", "Last 3 Months Sales",
+                      "Last 6 Months Sales"]:
                 df_low_display[c] = pd.to_numeric(df_low_display[c], errors="coerce")
                 df_low_display.loc[df_low_display[c].fillna(0) == 0, c] = pd.NA
 
@@ -1236,19 +622,21 @@ def show_inventory(tx, inventory: pd.DataFrame):
             # 其他空值用字符 '-' 替换
             for col in display_columns:
                 if col in df_low_display.columns:
-                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity", "Profit Margin"]:  # 这些列已经特殊处理过
+                    if col not in ["Total Retail", "Total Inventory", "Profit", "Velocity",
+                                   "Profit Margin", "Last 3 Months Sales", "Last 6 Months Sales"]:  # 这些列已经特殊处理过
                         df_low_display[col] = df_low_display[col].fillna('-')
 
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
-                'Item Variation Name': st.column_config.Column(width=50),
-                'SKU': st.column_config.Column(width=100),
+                'Variation Name': st.column_config.Column(width=150),
                 'Current Quantity': st.column_config.Column(width=110),
                 'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
                 'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
                 'Profit': st.column_config.NumberColumn("Profit", width=50, format="%.1f"),
                 'Profit Margin': st.column_config.NumberColumn("Profit Margin", width=90, format="%.1f%%"),
                 'Velocity': st.column_config.NumberColumn("Velocity", width=60, format="%.1f"),
+                'Last 3 Months Sales': st.column_config.NumberColumn("Last 3 Months Sales", width=120, format="$%.0f"),
+                'Last 6 Months Sales': st.column_config.NumberColumn("Last 6 Months Sales", width=120, format="$%.0f"),
             }
 
             st.dataframe(
@@ -1257,8 +645,8 @@ def show_inventory(tx, inventory: pd.DataFrame):
                 use_container_width=False
             )
         else:
-            st.info("No matching low stock items.")
+            st.info("No matching items found with the current filters.")
     else:
-        st.success("No low stock items.")
+        st.success("No items found with the current filters.")
 
     st.markdown("---")

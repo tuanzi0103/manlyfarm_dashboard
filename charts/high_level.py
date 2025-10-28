@@ -318,7 +318,7 @@ def prepare_chart_data_fast(daily, category_tx, inv_grouped, time_range, data_se
                 (grouped_inv["date"] >= pd.to_datetime(t1)) & (grouped_inv["date"] <= pd.to_datetime(t2))]
 
     # 定义bar分类（这5个分类使用 net_sales + tax 计算）
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
 
     # 修复：过滤掉没有数据的分类，避免重复显示
     small_cats = []
@@ -834,7 +834,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         """计算bar和retail在选定时间范围的数据"""
 
         # bar分类定义
-        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+        bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
+
 
         # 根据时间范围筛选分类数据
         category_filtered = filter_data_by_time_range(
@@ -1009,7 +1010,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         'Daily Net Sales': [
             f"${proper_round(bar_retail_data['bar']['Daily Net Sales']):,}",
             f"${proper_round(bar_retail_data['retail']['Daily Net Sales']):,}",
-            f"${proper_round(kpis_main['Daily Net Sales']):,}"
+            f"${proper_round(bar_retail_data['bar']['Daily Net Sales'] + bar_retail_data['retail']['Daily Net Sales']):,}"
         ],
         'Daily Transactions': [
             f"{proper_round(bar_retail_data['bar']['Daily Transactions']):,}",

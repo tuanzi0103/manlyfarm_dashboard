@@ -220,7 +220,7 @@ def extract_item_name(item):
 def prepare_sales_data(df_filtered):
     """使用与 high_level.py 相同的逻辑准备销售数据"""
     # 定义bar分类（与high_level.py一致）
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
 
     # 复制数据避免修改原数据
     df = df_filtered.copy()
@@ -302,7 +302,7 @@ def calculate_item_sales(items_df, selected_categories, selected_items, start_da
         return pd.DataFrame()
 
     # 定义bar分类
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
 
     # 计算每个商品项的销售数据
     def calculate_sales(row):
@@ -359,7 +359,7 @@ def calculate_item_daily_trends(items_df, selected_categories, selected_items, s
         return pd.DataFrame()
 
     # 定义bar分类
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
 
     # 计算每个商品项的销售数据
     def calculate_sales(row):
@@ -438,7 +438,7 @@ def get_top_items_by_category(items_df, categories, start_date=None, end_date=No
         return {}
 
     # 定义bar分类
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
 
     # 计算每个商品项的销售数据
     def calculate_sales(row):
@@ -552,24 +552,58 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     start_date, end_date = None, today
 
     if range_opt == "Custom dates":
-        # 使用与 high_level.py 相同的日期选择器样式
+        # ==== ✅ 自动计算最近有数据的一周 ====
+        if not category_tx.empty:
+            all_dates = sorted(category_tx["date"].dt.normalize().unique())
+            today = pd.Timestamp.today().normalize()
+            this_monday = today - pd.Timedelta(days=today.weekday())  # 当前周一
+            this_sunday = this_monday + pd.Timedelta(days=6)
+
+            # 当前周的日期范围
+            this_week_mask = (category_tx["date"] >= this_monday) & (category_tx["date"] <= this_sunday)
+            this_week_data = category_tx.loc[this_week_mask]
+
+            if not this_week_data.empty:
+                # ✅ 当前周有数据，默认显示当前周
+                default_from, default_to = this_monday, min(this_sunday, all_dates[-1])
+            else:
+                # ✅ 当前周无数据，则回退上一周
+                last_monday = this_monday - pd.Timedelta(days=7)
+                last_sunday = this_sunday - pd.Timedelta(days=7)
+                last_week_mask = (category_tx["date"] >= last_monday) & (category_tx["date"] <= last_sunday)
+                last_week_data = category_tx.loc[last_week_mask]
+                if not last_week_data.empty:
+                    default_from, default_to = last_monday, last_sunday
+                else:
+                    # 如果两周都没数据，则取最近有数据的一周
+                    latest_date = pd.to_datetime(all_dates[-1])
+                    default_to = latest_date
+                    default_from = latest_date - pd.Timedelta(days=6)
+        else:
+            # 数据为空时回退默认
+            today = pd.Timestamp.today().normalize()
+            default_from, default_to = today - pd.Timedelta(days=7), today
+
+        # === 日期选择器 ===
         col_from, col_to, _ = st.columns([1, 1, 5])
         with col_from:
             t1 = st.date_input(
                 "From",
-                value=pd.Timestamp.today().normalize() - pd.Timedelta(days=7),
+                value=default_from,
                 key="sr_date_from",
-                format="DD/MM/YYYY"  # 欧洲日期格式
+                format="DD/MM/YYYY"
             )
         with col_to:
             t2 = st.date_input(
                 "To",
-                value=pd.Timestamp.today().normalize(),
+                value=default_to,
                 key="sr_date_to",
-                format="DD/MM/YYYY"  # 欧洲日期格式
+                format="DD/MM/YYYY"
             )
+
         if t1 and t2:
             start_date, end_date = pd.to_datetime(t1), pd.to_datetime(t2)
+
     elif range_opt == "WTD":
         start_date = today - pd.Timedelta(days=today.weekday())
     elif range_opt == "MTD":
@@ -617,7 +651,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Group definitions ----------------
     # 使用与 high_level.py 完全相同的分类定义
-    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads"}
+    bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
     retail_cats = [c for c in df_filtered_fixed["Category"].unique() if c not in bar_cats]
 
     # helper: 根据时间范围计算汇总数据 - 使用修复后的数据
@@ -791,8 +825,8 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         .bar-table-wrapper {{
             width:{TABLE_WIDTH}px !important;
             max-width:{TABLE_WIDTH}px !important;
-            margin: 0;
-            padding: 0;
+            margin: 0 !important;
+            padding: 0 !important;
         }}
         .bar-table-wrapper [data-testid="stDataFrame"] {{
             width:{TABLE_WIDTH}px !important;
@@ -814,9 +848,11 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         """, unsafe_allow_html=True)
 
         # === 两个表放在同一个容器 ===
-        st.markdown(f"<div class='bar-table-wrapper'>", unsafe_allow_html=True)
+        st.markdown(f"<div class='bar-table-wrapper' style='border: 0.1px solid #e6e6e6; padding: 0px; margin: 0px;'>",
+                    unsafe_allow_html=True)
 
         # Total 表
+
         st.dataframe(
             total_row[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
                        "Per day", "Comments", "Weekly change"]],
@@ -824,12 +860,15 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             hide_index=True,
             use_container_width=False  # 🚫 不自动平分列宽
         )
-
-        # 灰色分隔线（宽度与表一致）
-        st.markdown(
-            f"<div style='border-top: 1.3px solid gray; width:{TABLE_WIDTH}px; margin:3px 0;'></div>",
-            unsafe_allow_html=True
-        )
+        # === 添加：减少两个表格之间的间距 ===
+        st.markdown("""
+        <style>
+        [data-testid="stDataFrame"] {
+            margin-top: -16px !important;
+            margin-bottom: -16px !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
         # 主表
         st.dataframe(
@@ -1070,11 +1109,15 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                 use_container_width=False
             )
 
-            # --- 灰线（与表完全等宽） ---
-            st.markdown(
-                f"<div style='border-top: 1.3px solid gray; width:{TABLE_WIDTH}px; margin:3px 0;'></div>",
-                unsafe_allow_html=True
-            )
+            # === 添加：减少两个表格之间的间距 ===
+            st.markdown("""
+                    <style>
+                    [data-testid="stDataFrame"] {
+                        margin-top: -16px !important;
+                        margin-bottom: -16px !important;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
 
             # --- 主表 ---
             st.dataframe(
