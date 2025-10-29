@@ -517,8 +517,19 @@ def show_customer_segmentation(tx, members):
         )
 
     if sel_ids:
-        chosen = tx[tx["Customer ID"].astype(str).isin(sel_ids)]
-        st.markdown("<h3 style='font-size:20px; font-weight:700;'>All transactions for selected customers</h3>", unsafe_allow_html=True)
+        # === 修复：兼容 Customer ID 变更或为空的情况 ===
+        # 根据选中 ID 找出对应的 Customer Name
+        sel_names = tx[tx["Customer ID"].astype(str).isin(sel_ids)]["Customer Name"].dropna().unique().tolist()
+
+        # 匹配逻辑：Customer ID 或 Customer Name 任一符合都保留
+        chosen = tx[
+            tx["Customer ID"].astype(str).isin(sel_ids) |
+            tx["Customer Name"].isin(sel_names)
+            ]
+
+        st.markdown("<h3 style='font-size:20px; font-weight:700;'>All transactions for selected customers</h3>",
+                    unsafe_allow_html=True)
+
         column_config = {
             "Datetime": st.column_config.Column(width=120),
             "Customer Name": st.column_config.Column(width=120),

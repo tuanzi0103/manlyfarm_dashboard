@@ -552,22 +552,33 @@ def show_inventory(tx, inventory: pd.DataFrame):
                                  "Net Sales": "Last 6 Months Sales"})
             )
 
-            # 合并所有销售数据 - 使用 Item Name 和 Variation Name 作为连接键
-            df_low_display = df_low_display.merge(
-                item_sales_4w,
-                on=["Item Name", "Variation Name"],
-                how="left"
-            )
-            df_low_display = df_low_display.merge(
-                item_sales_3m,
-                on=["Item Name", "Variation Name"],
-                how="left"
-            )
-            df_low_display = df_low_display.merge(
-                item_sales_6m,
-                on=["Item Name", "Variation Name"],
-                how="left"
-            )
+            # === 🩹 修复逻辑：兼容 Variation Name 为空的匹配 ===
+            def smart_merge(df_inv, df_tx):
+                """
+                当 Variation Name 为空时，退回用 Item Name 直接匹配
+                """
+                df_inv_copy = df_inv.copy()
+                df_tx_copy = df_tx.copy()
+
+                # 标准化空值
+                df_inv_copy["Variation Name"] = df_inv_copy["Variation Name"].fillna("").astype(str).str.strip()
+                df_tx_copy["Variation Name"] = df_tx_copy["Variation Name"].fillna("").astype(str).str.strip()
+
+                # 先做双键匹配（Item Name + Variation Name）
+                merged = df_inv_copy.merge(df_tx_copy, on=["Item Name", "Variation Name"], how="left")
+
+                # 对仍未匹配（销售为空）的行，尝试仅按 Item Name 匹配
+                for col in df_tx_copy.columns:
+                    if col not in ["Item Name", "Variation Name"]:
+                        # 用仅按 Item Name 匹配的结果填补空值
+                        fallback = df_inv_copy.merge(df_tx_copy[["Item Name", col]], on="Item Name", how="left")
+                        merged[col] = merged[col].combine_first(fallback[col])
+
+                return merged
+
+            df_low_display = smart_merge(df_low_display, item_sales_4w)
+            df_low_display = smart_merge(df_low_display, item_sales_3m)
+            df_low_display = smart_merge(df_low_display, item_sales_6m)
 
             df_low_display["Velocity"] = df_low_display.apply(
                 lambda r: round(r["Total Retail"] / r["Net Sale 4W"], 2)
