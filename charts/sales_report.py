@@ -930,53 +930,78 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     total_sales = bar_item_summary["Sum of Daily Sales"].sum()
                     st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
 
-                    # 显示每日趋势折线图
+                    # 显示每日趋势柱形图（并列样式 + 图表宽度缩小为原来的一半）
                     bar_daily_trends = calculate_item_daily_trends(
                         items_df, selected_bar_categories, selected_bar_items, start_date, end_date
                     )
 
                     if not bar_daily_trends.empty:
-                        # 创建折线图
+                        # ✅ 多选框宽度，与 Select Bar Categories 一致
+                        metric_col1, _ = st.columns([1.5, 5.5])
+                        with metric_col1:
+                            metric_option = persisting_multiselect_with_width(
+                                label="Select metrics to display:",
+                                options=["Sum of Items Sold", "Sum of Daily Sales"],
+                                key="bar_daily_metric_select",
+                                default=["Sum of Items Sold", "Sum of Daily Sales"],
+                                width_chars=25  # 🔧 控制多选框宽度
+                            )
+
+                        # === 创建图形 ===
                         fig = go.Figure()
 
-                        # 添加Sum of Items Sold线
-                        fig.add_trace(go.Scatter(
-                            x=bar_daily_trends["date"],
-                            y=bar_daily_trends["Sum of Items Sold"],
-                            mode='lines+markers',
-                            name='Sum of Items Sold',
-                            line=dict(color='blue')
-                        ))
+                        # --- 蓝色柱：Sum of Items Sold ---
+                        if "Sum of Items Sold" in metric_option:
+                            fig.add_trace(go.Bar(
+                                x=bar_daily_trends["date"].dt.strftime("%b %d"),
+                                y=bar_daily_trends["Sum of Items Sold"],
+                                name="Sum of Items Sold",
+                                marker_color="blue",
+                                width=0.3,  # ✅ 调整柱宽为0.6（明显比默认宽）
+                                hovertemplate="Items Sold: %{y}<extra></extra>"
+                            ))
 
-                        # 添加Sum of Daily Sales线（使用次坐标轴）
-                        fig.add_trace(go.Scatter(
-                            x=bar_daily_trends["date"],
-                            y=bar_daily_trends["Sum of Daily Sales"],
-                            mode='lines+markers',
-                            name='Sum of Daily Sales',
-                            line=dict(color='red'),
-                            yaxis='y2'
-                        ))
+                        # --- 红色柱：Sum of Daily Sales ---
+                        if "Sum of Daily Sales" in metric_option:
+                            fig.add_trace(go.Bar(
+                                x=bar_daily_trends["date"].dt.strftime("%b %d"),
+                                y=bar_daily_trends["Sum of Daily Sales"],
+                                name="Sum of Daily Sales ($)",
+                                marker_color="red",
+                                width=0.3,  # ✅ 同样柱宽
+                                hovertemplate="Sales: $%{y}<extra></extra>"
+                            ))
 
-                        # 设置图表布局
+                        # ✅ 根据选择的指标动态切换模式
+                        if len(metric_option) == 1:
+                            bar_mode = "relative"  # 单指标直接显示
+                        else:
+                            bar_mode = "group"  # 多指标并排显示
+
+                        # === 更新布局 ===
                         fig.update_layout(
                             title="Daily Trends for Selected Items",
                             xaxis_title="Date",
-                            yaxis=dict(
-                                title=dict(text="Sum of Items Sold", font=dict(color='blue')),
-                                tickfont=dict(color='blue')
-                            ),
-                            yaxis2=dict(
-                                title=dict(text="Sum of Daily Sales ($)", font=dict(color='red')),
-                                tickfont=dict(color='red'),
-                                overlaying='y',
-                                side='right'
-                            ),
+                            yaxis_title="Value",
+                            barmode=bar_mode,
+                            bargap=0.02,  # ✅ 减少空隙 → 柱更宽
+                            bargroupgap=0.02,
                             height=400,
-                            margin=dict(t=60, b=60)
+                            margin=dict(t=60, b=60),
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1,
+                                font=dict(size=12, color="black", family="Arial")
+                            )
                         )
 
-                        st.plotly_chart(fig, use_container_width=True)
+                        # ✅ 图表居中显示，宽度为页面一半
+                        chart_col1, _ = st.columns([1, 1])
+                        with chart_col1:
+                            st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No data for selected items.")
         else:
@@ -1179,52 +1204,79 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     total_sales = retail_item_summary["Sum of Daily Sales"].sum()
                     st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
 
-                    # 显示每日趋势折线图
+                    # === ✅ 与 Bar 部分完全一致的 Daily Trends 图表 ===
                     retail_daily_trends = calculate_item_daily_trends(
                         items_df, selected_retail_categories, selected_retail_items, start_date, end_date
                     )
 
                     if not retail_daily_trends.empty:
-                        # 创建折线图
+                        # ✅ 多选框宽度，与 Select Retail Categories 一致
+                        metric_col1, _ = st.columns([1.5, 5.5])
+                        with metric_col1:
+                            metric_option = persisting_multiselect_with_width(
+                                label="Select metrics to display:",
+                                options=["Sum of Items Sold", "Sum of Daily Sales"],
+                                key="retail_daily_metric_select",
+                                default=["Sum of Items Sold", "Sum of Daily Sales"],
+                                width_chars=25  # 🔧 控制多选框宽度
+                            )
+
+                        # === 创建图形 ===
                         fig = go.Figure()
 
-                        # 添加Sum of Items Sold线
-                        fig.add_trace(go.Scatter(
-                            x=retail_daily_trends["date"],
-                            y=retail_daily_trends["Sum of Items Sold"],
-                            mode='lines+markers',
-                            name='Sum of Items Sold',
-                            line=dict(color='blue')
-                        ))
+                        # --- 蓝色柱：Sum of Items Sold ---
+                        if "Sum of Items Sold" in metric_option:
+                            fig.add_trace(go.Bar(
+                                x=retail_daily_trends["date"].dt.strftime("%b %d"),
+                                y=retail_daily_trends["Sum of Items Sold"],
+                                name="Sum of Items Sold",
+                                marker_color="blue",
+                                width=0.3,
+                                hovertemplate="Items Sold: %{y}<extra></extra>"
+                            ))
 
-                        # 添加Sum of Daily Sales线（使用次坐标轴）
-                        fig.add_trace(go.Scatter(
-                            x=retail_daily_trends["date"],
-                            y=retail_daily_trends["Sum of Daily Sales"],
-                            mode='lines+markers',
-                            name='Sum of Daily Sales',
-                            line=dict(color='red'),
-                            yaxis='y2'
-                        ))
+                        # --- 红色柱：Sum of Daily Sales ---
+                        if "Sum of Daily Sales" in metric_option:
+                            fig.add_trace(go.Bar(
+                                x=retail_daily_trends["date"].dt.strftime("%b %d"),
+                                y=retail_daily_trends["Sum of Daily Sales"],
+                                name="Sum of Daily Sales ($)",
+                                marker_color="red",
+                                width=0.3,
+                                hovertemplate="Sales: $%{y}<extra></extra>"
+                            ))
 
+                        # ✅ 根据选择的指标动态切换模式
+                        if len(metric_option) == 1:
+                            bar_mode = "relative"
+                        else:
+                            bar_mode = "group"
+
+                        # === 更新布局 ===
                         fig.update_layout(
                             title="Daily Trends for Selected Items",
                             xaxis_title="Date",
-                            yaxis=dict(
-                                title=dict(text="Sum of Items Sold", font=dict(color='blue')),
-                                tickfont=dict(color='blue')
-                            ),
-                            yaxis2=dict(
-                                title=dict(text="Sum of Daily Sales ($)", font=dict(color='red')),
-                                tickfont=dict(color='red'),
-                                overlaying='y',
-                                side='right'
-                            ),
+                            yaxis_title="Value",
+                            barmode=bar_mode,
+                            bargap=0.02,
+                            bargroupgap=0.02,
                             height=400,
-                            margin=dict(t=60, b=60)
+                            margin=dict(t=60, b=60),
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1,
+                                font=dict(size=12, color="black", family="Arial")
+                            )
                         )
 
-                        st.plotly_chart(fig, use_container_width=True)
+                        # ✅ 图表居中显示，宽度为页面一半
+                        chart_col1, _ = st.columns([1, 1])
+                        with chart_col1:
+                            st.plotly_chart(fig, use_container_width=True)
+
                 else:
                     st.info("No data for selected items.")
         else:

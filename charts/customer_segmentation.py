@@ -491,9 +491,14 @@ def show_customer_segmentation(tx, members):
     # [4] 姓名/ID 搜索（显示姓名，支持用 ID 搜索）
     options = []
     if "Customer ID" in tx.columns and "Customer Name" in tx.columns:
-        options = (tx[["Customer ID", "Customer Name"]]
-                   .dropna(subset=["Customer ID"])
-                   .drop_duplicates("Customer ID"))
+        # ✅ 仅保留每个 Customer Name 的最新一条 Customer ID
+        options = (
+            tx.dropna(subset=["Customer ID", "Customer Name", "Datetime"])
+            .sort_values("Datetime", ascending=False)
+            .drop_duplicates(subset=["Customer Name"])  # 保留每个名字最新的一条记录
+            [["Customer ID", "Customer Name"]]
+        )
+
         # 🚩 确保 Customer ID 全部是字符串，避免 multiselect 报错
         options["Customer ID"] = options["Customer ID"].astype(str)
         options = options.to_dict(orient="records")
@@ -543,6 +548,9 @@ def show_customer_segmentation(tx, members):
         # ✅ 仅显示指定列（按顺序）
         display_cols = ["Datetime", "Customer Name", "Category", "Item", "Qty", "Net Sales"]
         existing_cols = [c for c in display_cols if c in chosen.columns]
+
+        if "Datetime" in chosen.columns:
+            chosen = chosen.sort_values("Datetime", ascending=False)
 
         st.dataframe(
             chosen[existing_cols],
