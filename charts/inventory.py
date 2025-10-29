@@ -639,7 +639,7 @@ def show_inventory(tx, inventory: pd.DataFrame):
 
             column_config = {
                 'Item Name': st.column_config.Column(width=150),
-                'Variation Name': st.column_config.Column(width=150),
+                'Variation Name': st.column_config.Column(width=110),
                 'Current Quantity': st.column_config.Column(width=110),
                 'Total Inventory': st.column_config.NumberColumn("Total Inventory", width=100, format="%.1f"),
                 'Total Retail': st.column_config.NumberColumn("Total Retail", width=80, format="%.1f"),
