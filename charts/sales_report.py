@@ -696,14 +696,28 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         else:
             summary["prior_daily_sales"] = 0
 
-        # === 修改：修正weekly_change计算逻辑 ===
-        # 新逻辑：(当前周销售额 - 前一周销售额) / 前一周销售额 * 100
+        # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
+        summary["daily_sales_raw"] = summary["daily_sales"]  # 保存原始浮点值供后续计算
+
         MIN_BASE = 50
-        summary["weekly_change"] = np.where(
-            summary["prior_daily_sales"] > MIN_BASE,
-            (summary["daily_sales"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"] * 100,  # 乘以100
-            np.nan
-        )
+        # === 修正 weekly change ===
+        # detect if the selected period is a single day
+        is_single_day = (start_dt is not None and end_dt is not None and start_dt == end_dt)
+
+        if is_single_day:
+            # ✅ Single day logic: use true daily numbers (no aggregation distortion)
+            summary["weekly_change"] = np.where(
+                summary["prior_daily_sales"] > MIN_BASE,
+                (summary["daily_sales_raw"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"] * 100,
+                np.nan
+            )
+        else:
+            # ✅ Normal period vs period logic
+            summary["weekly_change"] = np.where(
+                summary["prior_daily_sales"] > MIN_BASE,
+                (summary["daily_sales"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"] * 100,
+                np.nan
+            )
 
         # 计算日均销量
         if start_dt and end_dt:
@@ -712,14 +726,13 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         else:
             summary["per_day"] = summary["items_sold"] / 7  # 默认按7天计算
 
-        # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
-        summary["daily_sales_raw"] = summary["daily_sales"]  # 保存原始浮点值供后续计算
-
         # 仅 items_sold 取整
         summary["items_sold"] = summary["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
 
         # 展示列用整数，但不影响 raw 精度
-        summary["daily_sales_display"] = summary["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+        summary["daily_sales_display"] = summary["daily_sales"].apply(
+            lambda x: proper_round(x) if pd.notna(x) else x
+        ).astype(int)
 
         # per_day 也取整展示
         summary["per_day"] = summary["per_day"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
@@ -756,13 +769,24 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # 添加Comments列
         bar_df["Comments"] = bar_df["Category"].map(bar_top_items)
 
+        # ✅ 用整数显示，避免小数+红角
+        bar_df["daily_sales_display"] = bar_df["daily_sales"].apply(
+            lambda x: proper_round(x) if pd.notna(x) else x).astype(int)
+
+        # ✅ raw 数值列用于排序、避免红角
+        bar_df["daily_sales_raw"] = bar_df["daily_sales"]
+
         bar_df = bar_df.rename(columns={
             "Category": "Row Labels",
             "items_sold": "Sum of Items Sold",
-            "daily_sales": "Sum of Daily Sales",
+            "daily_sales_display": "Sum of Daily Sales",  # ✅ 用展示列
             "weekly_change": "Weekly change",
             "per_day": "Per day"
         })
+
+        # ✅ format & sort columns for Sum of Daily Sales
+        bar_df["_sort_daily_sales"] = bar_df["Sum of Daily Sales"]
+        bar_df["Sum of Daily Sales Display"] = bar_df["Sum of Daily Sales"].apply(lambda x: f"${x:,.0f}")
 
         bar_df = bar_df.sort_values("Sum of Daily Sales", ascending=False)
         # 创建总计行
@@ -778,11 +802,13 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         else:
             total_weekly_change = np.nan
 
-        # 创建数据框（与high_level.py相同的格式）- 总计行放在第一行
+        # === 创建数据框（与high_level.py相同的格式）- 总计行放在第一行 ===
         bar_summary_data = {
             'Row Labels': ["Total"] + bar_df["Row Labels"].tolist(),
             'Sum of Items Sold': [total_items_sold] + bar_df["Sum of Items Sold"].tolist(),
-            'Sum of Daily Sales': [total_daily_sales] + bar_df["Sum of Daily Sales"].tolist(),
+            'Sum of Daily Sales': [f"${total_daily_sales:,.0f}"] + bar_df["Sum of Daily Sales Display"].tolist(),
+            '_sort_daily_sales': [total_daily_sales] + bar_df["_sort_daily_sales"].tolist(),
+
             'Weekly change': [total_weekly_change] + bar_df["Weekly change"].tolist(),
             'Per day': [total_per_day] + bar_df["Per day"].tolist(),
             'Comments': [bar_total_top_items] + bar_df["Comments"].tolist()
@@ -795,13 +821,27 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_row = df_bar_summary[df_bar_summary['Row Labels'] == 'Total']
         other_rows = df_bar_summary[df_bar_summary['Row Labels'] != 'Total']
 
-        # === 修正：按 Weekly change 数值从小到大排序（空值放最后）
-        other_rows_sorted = other_rows.sort_values(
-            by='Weekly change',
-            key=lambda x: pd.to_numeric(x, errors='coerce'),
-            ascending=True,
-            na_position='last'
+        # === Sort toggle for Sum of Daily Sales ===
+        sort_opt_bar = st.radio(
+            "Sort by Sum of Daily Sales",
+            options=["Default", "Asc", "Desc"],
+            horizontal=True,
+            key="bar_sort_toggle",
+            label_visibility="collapsed"
         )
+
+        if sort_opt_bar == "Asc":
+            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=True)
+        elif sort_opt_bar == "Desc":
+            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=False)
+        else:
+            # Default = sort by Weekly change (original behavior)
+            other_rows_sorted = other_rows.sort_values(
+                by='Weekly change',
+                key=lambda x: pd.to_numeric(x, errors='coerce'),
+                ascending=True,
+                na_position='last'
+            )
 
         # Total 行始终放在最上方
         df_bar_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
@@ -809,12 +849,16 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # === ✅ 保持等宽且保留自定义列宽 ===
         TABLE_WIDTH = 730
 
-        # === 定义统一列宽配置（保留原来比例） ===
         bar_column_config = {
             "Row Labels": st.column_config.Column(width=130),
-            "Sum of Items Sold": st.column_config.Column(width=110),
-            "Sum of Daily Sales": st.column_config.NumberColumn(width=130, format="$%d"),
-            "Per day": st.column_config.Column(width=70),
+            "Sum of Items Sold": st.column_config.NumberColumn("Sum of Items Sold", width=110, format="%d"),
+            "Sum of Daily Sales": st.column_config.Column(
+                "Sum of Daily Net Sales",
+                width=130,
+                disabled=True   # ✅ 禁用列头排序
+            ),
+            "_sort_daily_sales": st.column_config.NumberColumn("", width=1, format="%d"),
+            "Per day": st.column_config.NumberColumn("Per day", width=70, format="%d"),
             "Comments": st.column_config.Column(width=240),
             "Weekly change": st.column_config.NumberColumn(width=100, label="Weekly change", format="%.2f%%"),
         }
@@ -851,14 +895,12 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         st.markdown(f"<div class='bar-table-wrapper' style='border: 0.1px solid #e6e6e6; padding: 0px; margin: 0px;'>",
                     unsafe_allow_html=True)
 
-        # Total 表
-
         st.dataframe(
             total_row[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
                        "Per day", "Comments", "Weekly change"]],
             column_config=bar_column_config,
             hide_index=True,
-            use_container_width=False  # 🚫 不自动平分列宽
+            use_container_width=False
         )
         # === 添加：减少两个表格之间的间距 ===
         st.markdown("""
@@ -870,13 +912,14 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         </style>
         """, unsafe_allow_html=True)
 
-        # 主表
+
+        # 主表 - 隐藏排序列
         st.dataframe(
             other_rows_sorted[["Row Labels", "Sum of Items Sold", "Sum of Daily Sales",
                                "Per day", "Comments", "Weekly change"]],
             column_config=bar_column_config,
             hide_index=True,
-            use_container_width=False  # 🚫 不自动平分列宽
+            use_container_width=False
         )
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -928,7 +971,8 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     # 显示小计
                     total_qty = bar_item_summary["Sum of Items Sold"].sum()
                     total_sales = bar_item_summary["Sum of Daily Sales"].sum()
-                    st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
+                    st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales:,.0f}")
+
 
                     # 显示每日趋势柱形图（并列样式 + 图表宽度缩小为原来的一半）
                     bar_daily_trends = calculate_item_daily_trends(
@@ -956,7 +1000,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                 x=bar_daily_trends["date"].dt.strftime("%b %d"),
                                 y=bar_daily_trends["Sum of Items Sold"],
                                 name="Sum of Items Sold",
-                                marker_color="blue",
+                                marker_color="#4F6D7A",
                                 width=0.3,  # ✅ 调整柱宽为0.6（明显比默认宽）
                                 hovertemplate="Items Sold: %{y}<extra></extra>"
                             ))
@@ -967,7 +1011,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                 x=bar_daily_trends["date"].dt.strftime("%b %d"),
                                 y=bar_daily_trends["Sum of Daily Sales"],
                                 name="Sum of Daily Sales ($)",
-                                marker_color="red",
+                                marker_color="#F2A65A",
                                 width=0.3,  # ✅ 同样柱宽
                                 hovertemplate="Sales: $%{y}<extra></extra>"
                             ))
@@ -997,6 +1041,32 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                 font=dict(size=12, color="black", family="Arial")
                             )
                         )
+                        # ✅ 仅当只显示 Items Sold（未勾选 Sales）时，强制整数并自适配步长
+                        if ("Sum of Items Sold" in metric_option) and ("Sum of Daily Sales" not in metric_option):
+                            qty_max = int(max(1, (
+                                bar_daily_trends if 'bar_daily_trends' in locals() else retail_daily_trends)[
+                                "Sum of Items Sold"].max()))
+
+                            # 目标 5~7 个刻度，选择 1/2/5×10^k 的“漂亮步长”
+                            import math
+                            def nice_dtick(n_max, target_ticks=6):
+                                raw = max(1, math.ceil(n_max / target_ticks))
+                                bases = [1, 2, 5]
+                                k = 0
+                                while True:
+                                    for b in bases:
+                                        step = b * (10 ** k)
+                                        if step >= raw:
+                                            return step
+                                    k += 1
+
+                            step = nice_dtick(qty_max)
+                            fig.update_yaxes(
+                                tickmode="linear",
+                                tick0=0,
+                                dtick=step,  # ← 关键：1/2/5×10^k 自适应
+                                rangemode="tozero"  # 从 0 起，最大值交给 Plotly 自动算
+                            )
 
                         # ✅ 图表居中显示，宽度为页面一半
                         chart_col1, _ = st.columns([1, 1])
@@ -1048,11 +1118,23 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_daily_sales = proper_round(total_daily_sales_raw)
         total_per_day = proper_round(retail_df["Per day"].sum())
 
+        # === 修复：创建带千位分隔符的显示列和隐藏的排序列 ===
+        retail_df["Sum of Daily Sales Display"] = retail_df["Sum of Daily Sales"].apply(lambda x: f"${x:,.0f}")
+        retail_df["_sort_daily_sales"] = retail_df["Sum of Daily Sales"]  # 隐藏的数值列用于排序
+        total_daily_sales_display = f"${total_daily_sales:,.0f}"
+
+        # === 修复：创建带千位分隔符的显示列和隐藏的排序列 ===
+        retail_df["Sum of Daily Sales Display"] = retail_df["Sum of Daily Sales"].apply(lambda x: f"${x:,.0f}")
+        retail_df["_sort_daily_sales"] = retail_df["Sum of Daily Sales"]  # 隐藏的数值列用于排序
+        total_daily_sales_display = f"${total_daily_sales:,.0f}"
+
         # 创建数据框（与high_level.py相同的格式）- 总计行放在第一行
         retail_summary_data = {
             'Row Labels': ["Total"] + retail_df["Row Labels"].tolist(),
             'Sum of Items Sold': [total_items_sold] + retail_df["Sum of Items Sold"].tolist(),
-            'Sum of Daily Sales': [total_daily_sales] + retail_df["Sum of Daily Sales"].tolist(),
+            'Sum of Daily Sales': [total_daily_sales_display] + retail_df["Sum of Daily Sales Display"].tolist(),
+            # 使用带千位分隔符的显示列
+            '_sort_daily_sales': [total_daily_sales] + retail_df["_sort_daily_sales"].tolist(),  # 隐藏的数值列用于排序
             'Weekly change': [total_weekly_change] + retail_df["Weekly change"].tolist(),
             'Per day': [total_per_day] + retail_df["Per day"].tolist(),
             'Comments': [retail_total_top_items] + retail_df["Comments"].tolist()
@@ -1061,17 +1143,30 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         df_retail_summary = pd.DataFrame(retail_summary_data)
 
         # === 修正：直接按照Weekly change数值从小到大排序 ===
-        # 先分离Total行和其他行
+        # === Sort toggle for Sum of Daily Sales (Retail) ===
+        sort_opt_retail = st.radio(
+            "Sort by Sum of Daily Sales (Retail)",
+            options=["Default", "Asc", "Desc"],
+            horizontal=True,
+            key="retail_sort_toggle",
+            label_visibility="collapsed"
+        )
+
         total_row = df_retail_summary[df_retail_summary['Row Labels'] == 'Total']
         other_rows = df_retail_summary[df_retail_summary['Row Labels'] != 'Total']
 
-        # === 修正：按 Weekly change 数值从小到大排序（空值放最后）
-        other_rows_sorted = other_rows.sort_values(
-            by='Weekly change',
-            key=lambda x: pd.to_numeric(x, errors='coerce'),
-            ascending=True,
-            na_position='last'
-        )
+        if sort_opt_retail == "Asc":
+            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=True)
+        elif sort_opt_retail == "Desc":
+            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=False)
+        else:
+            # Default = Keep your original logic (weekly change sort)
+            other_rows_sorted = other_rows.sort_values(
+                by='Weekly change',
+                key=lambda x: pd.to_numeric(x, errors='coerce'),
+                ascending=True,
+                na_position='last'
+            )
 
         # Total 行始终放在最上方
         df_retail_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
@@ -1083,11 +1178,20 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_row_retail = df_retail_summary_sorted[df_retail_summary_sorted['Row Labels'] == 'Total']
         other_rows_retail = df_retail_summary_sorted[df_retail_summary_sorted['Row Labels'] != 'Total']
 
-        # === 定义统一列宽配置（与Bar一致） ===
         retail_column_config = {
             "Row Labels": st.column_config.Column(width=130),
             "Sum of Items Sold": st.column_config.Column(width=110),
-            "Sum of Daily Sales": st.column_config.NumberColumn(width=130, format="$%d"),
+            "Sum of Daily Sales": st.column_config.TextColumn(  # 改为 TextColumn
+            "Sum of Daily Sales",
+                width=130,
+                disabled=True
+            ),
+            "_sort_daily_sales": st.column_config.NumberColumn(
+                "",
+                width=1,
+                format="%d"
+            ),
+            "daily_sales_raw": st.column_config.NumberColumn(width=1, label="", format="%d"),
             "Per day": st.column_config.Column(width=70),
             "Comments": st.column_config.Column(width=240),
             "Weekly change": st.column_config.NumberColumn(width=100, label="Weekly change", format="%.2f%%"),
@@ -1166,7 +1270,9 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             retail_item_options = sorted(retail_items_df["clean_item"].dropna().unique())
 
             # 选择Retail分类和商品项 - 放在同一行
-            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.6, 1.3, 2.9])
+            col_retail1, col_retail2, col_retail3, _ = st.columns([1.2, 1.2, 1.6, 2.9])
+
+            # --- Retail Categories ---
             with col_retail1:
                 selected_retail_categories = persisting_multiselect_with_width(
                     "Select Retail Categories",
@@ -1174,10 +1280,31 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     key="retail_categories_select",
                     width_chars=22
                 )
+
+            # --- Search box ---
             with col_retail2:
+                st.markdown("<div style='margin-top: 1.0rem;'></div>", unsafe_allow_html=True)
+                retail_item_search_term = st.text_input(
+                    "🔍 Search Items",
+                    placeholder="Search keywords...",
+                    key="retail_item_search_term"
+                )
+
+            # --- Item multiselect (filtered) ---
+            with col_retail3:
+                if retail_item_search_term:
+                    search_lower = retail_item_search_term.lower()
+                    filtered_retail_items = [
+                        item for item in retail_item_options if search_lower in str(item).lower()
+                    ]
+                    item_count_text = f"{len(filtered_retail_items)} items"
+                else:
+                    filtered_retail_items = retail_item_options
+                    item_count_text = f"{len(retail_item_options)} items"
+
                 selected_retail_items = persisting_multiselect_with_width(
-                    "Select Items from Retail Categories",
-                    options=retail_item_options,
+                    f"Select Items ({item_count_text})",
+                    options=filtered_retail_items,
                     key="retail_items_select",
                     width_chars=30
                 )
@@ -1202,7 +1329,8 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                     # 显示小计
                     total_qty = retail_item_summary["Sum of Items Sold"].sum()
                     total_sales = retail_item_summary["Sum of Daily Sales"].sum()
-                    st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales}")
+                    st.write(f"**Subtotal for selected items:** {total_qty} items, ${total_sales:,.0f}")
+
 
                     # === ✅ 与 Bar 部分完全一致的 Daily Trends 图表 ===
                     retail_daily_trends = calculate_item_daily_trends(
@@ -1230,7 +1358,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                 x=retail_daily_trends["date"].dt.strftime("%b %d"),
                                 y=retail_daily_trends["Sum of Items Sold"],
                                 name="Sum of Items Sold",
-                                marker_color="blue",
+                                marker_color="#4F6D7A",
                                 width=0.3,
                                 hovertemplate="Items Sold: %{y}<extra></extra>"
                             ))
@@ -1241,7 +1369,7 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                 x=retail_daily_trends["date"].dt.strftime("%b %d"),
                                 y=retail_daily_trends["Sum of Daily Sales"],
                                 name="Sum of Daily Sales ($)",
-                                marker_color="red",
+                                marker_color="#F2A65A",
                                 width=0.3,
                                 hovertemplate="Sales: $%{y}<extra></extra>"
                             ))
@@ -1271,6 +1399,32 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
                                 font=dict(size=12, color="black", family="Arial")
                             )
                         )
+                        # ✅ 仅当只显示 Items Sold（未勾选 Sales）时，强制整数并自适配步长
+                        if ("Sum of Items Sold" in metric_option) and ("Sum of Daily Sales" not in metric_option):
+                            qty_max = int(max(1, (
+                                retail_daily_trends if 'retail_daily_trends' in locals() else retail_daily_trends)[
+                                "Sum of Items Sold"].max()))
+
+                            # 目标 5~7 个刻度，选择 1/2/5×10^k 的“漂亮步长”
+                            import math
+                            def nice_dtick(n_max, target_ticks=6):
+                                raw = max(1, math.ceil(n_max / target_ticks))
+                                bases = [1, 2, 5]
+                                k = 0
+                                while True:
+                                    for b in bases:
+                                        step = b * (10 ** k)
+                                        if step >= raw:
+                                            return step
+                                    k += 1
+
+                            step = nice_dtick(qty_max)
+                            fig.update_yaxes(
+                                tickmode="linear",
+                                tick0=0,
+                                dtick=step,  # ← 关键：1/2/5×10^k 自适应
+                                rangemode="tozero"  # 从 0 起，最大值交给 Plotly 自动算
+                            )
 
                         # ✅ 图表居中显示，宽度为页面一半
                         chart_col1, _ = st.columns([1, 1])

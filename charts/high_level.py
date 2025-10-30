@@ -864,7 +864,7 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         # === 计算retail数据 ===
         retail_data = category_filtered[~category_filtered["Category"].isin(bar_cats)].copy()
         retail_net_sales_raw = retail_data["net_sales"].sum()
-        retail_net_sales = proper_round(retail_net_sales_raw)
+        retail_net_sales = proper_round(retail_net_sales_raw)  # 零售：所有非bar单一类net sales求和后四舍五入
         retail_transactions = retail_data["transactions"].sum()
         retail_avg_txn = retail_net_sales_raw / retail_transactions if retail_transactions > 0 else 0
         retail_qty = retail_data["qty"].sum()
@@ -878,10 +878,14 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         retail_3m_avg = proper_round(retail_recent_3m["net_sales"].sum() / 90) if not retail_recent_3m.empty else 0
         retail_6m_avg = proper_round(retail_recent_6m["net_sales"].sum() / 180) if not retail_recent_6m.empty else 0
 
-        # === total改为bar + retail ===
-        total_net_sales = bar_net_sales + retail_net_sales
-        total_transactions = bar_transactions + retail_transactions
-        total_qty = bar_qty + retail_qty
+        # total 应该是所有单一类的net sales求和后四舍五入
+        # 先获取所有分类数据（包括bar和非bar分类）
+        all_categories_data = category_filtered.copy()
+        total_net_sales_raw = all_categories_data["net_sales"].sum()
+        total_net_sales = proper_round(total_net_sales_raw)
+
+        total_transactions = all_categories_data["transactions"].sum()
+        total_qty = all_categories_data["qty"].sum()
 
         # === 客户数保持按交易比例分配 ===
         total_customers = calculate_customer_count(tx, time_range, selected_date, custom_dates_selected, t1, t2)
