@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import math
 from services.db import get_db
+from datetime import datetime, timedelta, date  # 添加 date 导入
 
 
 def proper_round(x):
@@ -584,19 +585,43 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
             today = pd.Timestamp.today().normalize()
             default_from, default_to = today - pd.Timedelta(days=7), today
 
+        # ========== 在这里添加类型转换代码 ==========
+        # ========== 在这里添加类型转换代码 ==========
+        # 确保默认日期是 date 类型
+        def ensure_date_type(date_obj):
+            """确保日期对象是 Python date 类型"""
+            if date_obj is None:
+                return None
+            if isinstance(date_obj, pd.Timestamp):
+                return date_obj.date()
+            if isinstance(date_obj, datetime):
+                return date_obj.date()
+            if isinstance(date_obj, date):
+                return date_obj
+            # 处理 numpy.datetime64 类型
+            if isinstance(date_obj, np.datetime64):
+                return pd.Timestamp(date_obj).date()
+            # 如果是字符串，尝试转换
+            if isinstance(date_obj, str):
+                try:
+                    return pd.to_datetime(date_obj).date()
+                except:
+                    return date_obj
+            return date_obj
+
         # === 日期选择器 ===
         col_from, col_to, _ = st.columns([1, 1, 5])
         with col_from:
             t1 = st.date_input(
                 "From",
-                value=default_from,
+                value=default_from,  # 直接使用已经转换的 default_from
                 key="sr_date_from",
                 format="DD/MM/YYYY"
             )
         with col_to:
             t2 = st.date_input(
                 "To",
-                value=default_to,
+                value=default_to,  # 直接使用已经转换的 default_to
                 key="sr_date_to",
                 format="DD/MM/YYYY"
             )
@@ -696,9 +721,8 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         else:
             summary["prior_daily_sales"] = 0
 
-        # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
+            # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
         summary["daily_sales_raw"] = summary["daily_sales"]  # 保存原始浮点值供后续计算
-
         MIN_BASE = 50
         # === 修正 weekly change ===
         # detect if the selected period is a single day
