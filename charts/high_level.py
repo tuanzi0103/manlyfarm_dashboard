@@ -863,8 +863,10 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
 
         # === 计算retail数据 ===
         retail_data = category_filtered[~category_filtered["Category"].isin(bar_cats)].copy()
-        retail_net_sales_raw = retail_data["net_sales"].sum()
-        retail_net_sales = proper_round(retail_net_sales_raw)  # 零售：所有非bar单一类net sales求和后四舍五入
+        # Retail = sum all non-bar net_sales then round (纯净净销售额)
+        retail_net_sales_raw = pd.to_numeric(retail_data["net_sales"], errors="coerce").sum()
+        retail_net_sales = proper_round(retail_net_sales_raw)
+
         retail_transactions = retail_data["transactions"].sum()
         retail_avg_txn = retail_net_sales_raw / retail_transactions if retail_transactions > 0 else 0
         retail_qty = retail_data["qty"].sum()
@@ -881,7 +883,8 @@ def show_high_level(tx: pd.DataFrame, mem: pd.DataFrame, inv: pd.DataFrame):
         # total 应该是所有单一类的net sales求和后四舍五入
         # 先获取所有分类数据（包括bar和非bar分类）
         all_categories_data = category_filtered.copy()
-        total_net_sales_raw = all_categories_data["net_sales"].sum()
+        # Total = sum all category net_sales then round (纯净净销售额)
+        total_net_sales_raw = pd.to_numeric(all_categories_data["net_sales"], errors="coerce").sum()
         total_net_sales = proper_round(total_net_sales_raw)
 
         total_transactions = all_categories_data["transactions"].sum()
