@@ -29,10 +29,12 @@ def _safe_sum(df, col):
 
 
 def proper_round(x):
-    """标准的四舍五入方法，0.5总是向上舍入"""
+    """标准的四舍五入方法，处理浮点数精度问题"""
     if pd.isna(x):
         return x
-    return math.floor(x + 0.5)
+    # 处理浮点数精度问题
+    x_rounded = round(x, 10)  # 先舍入到10位小数消除精度误差
+    return math.floor(x_rounded + 0.5)
 
 
 def persisting_multiselect(label, options, key, default=None, width_chars=None):
@@ -148,7 +150,7 @@ def preload_all_data():
     """预加载所有需要的数据"""
     db = get_db()
 
-    # 加载交易数据
+    # 加载交易数据 - 修复：确保包含所有分类，包括空分类
     daily_sql = """
     WITH transaction_totals AS (
         SELECT 
@@ -181,7 +183,11 @@ def preload_all_data():
     WITH category_transactions AS (
         SELECT 
             date(Datetime) AS date,
-            Category,
+            -- 修复：处理空分类，确保所有数据都被包含
+            CASE 
+                WHEN Category IS NULL OR TRIM(Category) = '' THEN 'None'
+                ELSE Category 
+            END AS Category,
             [Transaction ID] AS txn_id,
             SUM([Net Sales]) AS cat_net_sales,
             SUM(COALESCE(CAST(REPLACE(REPLACE([Tax], '$', ''), ',', '') AS REAL), 0)) AS cat_tax,
@@ -229,11 +235,11 @@ def preload_all_data():
         daily["date"] = pd.to_datetime(daily["date"])
         daily = daily.sort_values("date")
 
-        # 移除缺失数据的日期 (8.18, 8.19, 8.20) - 所有数据都过滤
+        # 移除缺失数据的日期 (8.18, 8.19, 8.20)
         missing_dates = ['2025-08-18', '2025-08-19', '2025-08-20']
         daily = daily[~daily["date"].isin(pd.to_datetime(missing_dates))]
 
-        # 计算滚动平均值 - 使用更准确的窗口计算
+        # 计算滚动平均值
         daily["3M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=90, min_periods=1, center=False).mean()
         daily["6M_Avg_Rolling"] = daily["net_sales_with_tax"].rolling(window=180, min_periods=1, center=False).mean()
 
@@ -248,16 +254,13 @@ def preload_all_data():
         category_with_rolling = []
         for cat in category["Category"].unique():
             cat_data = category[category["Category"] == cat].copy()
-            # 按日期排序确保滚动计算正确
             cat_data = cat_data.sort_values("date")
-            # 计算该分类的滚动平均值
             cat_data["3M_Avg_Rolling"] = cat_data["net_sales_with_tax"].rolling(window=90, min_periods=1,
                                                                                 center=False).mean()
             cat_data["6M_Avg_Rolling"] = cat_data["net_sales_with_tax"].rolling(window=180, min_periods=1,
                                                                                 center=False).mean()
             category_with_rolling.append(cat_data)
 
-        # 重新组合数据
         category = pd.concat(category_with_rolling, ignore_index=True)
 
     return daily, category

@@ -121,7 +121,11 @@ def preload_all_data():
     WITH category_transactions AS (
         SELECT 
             date(Datetime) AS date,
-            Category,
+            -- 修复：处理空分类，确保所有数据都被包含
+            CASE 
+                WHEN Category IS NULL OR TRIM(Category) = '' THEN 'None'
+                ELSE Category 
+            END AS Category,
             [Transaction ID] AS txn_id,
             SUM([Net Sales]) AS cat_net_sales,
             SUM(COALESCE(CAST(REPLACE(REPLACE([Tax], '$', ''), ',', '') AS REAL), 0)) AS cat_tax,
@@ -166,14 +170,18 @@ def preload_all_data():
     item_sql = """
     SELECT 
         date(Datetime) as date,
-        Category,
+        -- 修复：处理空分类
+        CASE 
+            WHEN Category IS NULL OR TRIM(Category) = '' THEN 'None'
+            ELSE Category 
+        END AS Category,
         Item,
         [Net Sales],
         Tax,
         Qty,
         [Gross Sales]
     FROM transactions
-    WHERE Category IS NOT NULL AND Item IS NOT NULL
+    WHERE Item IS NOT NULL  -- 只排除空商品项，不排除空分类
     """
 
     daily = pd.read_sql(daily_sql, db)
@@ -226,17 +234,14 @@ def prepare_sales_data(df_filtered):
     # 复制数据避免修改原数据
     df = df_filtered.copy()
 
+    # 确保包含所有数据，包括'None'分类
     # === 修改：所有Bar分类也使用net_sales（不含税）===
     df["final_sales"] = df.apply(
         lambda row: row["net_sales"] if row["Category"] in bar_cats else row["net_sales"],
         axis=1
     )
 
-    # === 修改：移除这里的四舍五入，在汇总后再进行 ===
-    # 不再在数据准备阶段进行四舍五入
-
     return df
-
 
 def extract_brand_name(item_name):
     """
@@ -612,16 +617,30 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # === 日期选择器 ===
         col_from, col_to, _ = st.columns([1, 1, 5])
         with col_from:
+            # 确保是 Python date 类型
+            if not isinstance(default_from, date):
+                try:
+                    default_from = pd.Timestamp(default_from).date()
+                except:
+                    default_from = date.today() - timedelta(days=7)
+
             t1 = st.date_input(
                 "From",
-                value=default_from,  # 直接使用已经转换的 default_from
+                value=default_from,
                 key="sr_date_from",
                 format="DD/MM/YYYY"
             )
         with col_to:
+            # 确保是 Python date 类型
+            if not isinstance(default_to, date):
+                try:
+                    default_to = pd.Timestamp(default_to).date()
+                except:
+                    default_to = date.today()
+
             t2 = st.date_input(
                 "To",
-                value=default_to,  # 直接使用已经转换的 default_to
+                value=default_to,
                 key="sr_date_to",
                 format="DD/MM/YYYY"
             )
@@ -679,64 +698,86 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
     bar_cats = {"Cafe Drinks", "Smoothie Bar", "Soups", "Sweet Treats", "Wraps & Salads", "Breakfast Bowls"}
     retail_cats = [c for c in df_filtered_fixed["Category"].unique() if c not in bar_cats]
 
-    # helper: 根据时间范围计算汇总数据 - 使用修复后的数据
     def time_range_summary(data, cats, range_type, start_dt, end_dt):
+        # 确保包含所有指定的分类，即使当天没有销售数据
+        # 先创建一个包含所有分类的空DataFrame作为基础
+        all_cats_df = pd.DataFrame({"Category": list(cats)})
+
+        # 获取当天的数据
         sub = data[data["Category"].isin(cats)].copy()
-        if sub.empty:
-            return pd.DataFrame()
 
-        # 使用修复后的数据聚合 - 先不四舍五入
-        summary = sub.groupby("Category", as_index=False).agg(
+        # 合并所有分类，确保即使没有销售数据的分类也包含在内
+        summary = all_cats_df.merge(sub.groupby("Category", as_index=False).agg(
             items_sold=("qty", "sum"),
-            daily_sales=("final_sales", "sum")  # 使用修复后的销售额
-        )
+            daily_sales=("final_sales", "sum")
+        ), on="Category", how="left")
 
-        # === 修改：移除这里的四舍五入，在计算完所有汇总后再进行 ===
-        # summary["items_sold"] = summary["items_sold"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
-        # summary["daily_sales"] = summary["daily_sales"].apply(lambda x: proper_round(x) if pd.notna(x) else x)
+        # 填充缺失值
+        summary["items_sold"] = summary["items_sold"].fillna(0)
+        summary["daily_sales"] = summary["daily_sales"].fillna(0)
 
         # 计算与前一个相同长度时间段的对比
         if start_dt and end_dt:
-            time_diff = end_dt - start_dt
-            prev_start = start_dt - time_diff - timedelta(days=1)
-            prev_end = start_dt - timedelta(days=1)
+            # === 新增逻辑：如果选择的是同一天，则与前一天比较 ===
+            is_single_day = (start_dt.date() == end_dt.date())
 
-            # 获取前一个时间段的数据 - 使用相同的修复逻辑
-            prev_mask = (category_tx["date"] >= prev_start) & (category_tx["date"] <= prev_end)
-            prev_data = category_tx.loc[prev_mask].copy()
+            if is_single_day:
+                # ✅ 单日逻辑：使用前一天的数据进行比较
+                prev_day = start_dt - timedelta(days=1)
+                prev_start = prev_day
+                prev_end = prev_day
+            else:
+                # ✅ 正常时间段逻辑：与前一个相同长度时间段比较
+                time_diff = end_dt - start_dt
+                prev_start = start_dt - time_diff - timedelta(days=1)
+                prev_end = start_dt - timedelta(days=1)
+
+            # 获取前一个时间段的数据 - 直接从原始数据获取，确保数据完整
+            prev_mask = (category_tx["date"] >= pd.to_datetime(prev_start)) & (
+                        category_tx["date"] <= pd.to_datetime(prev_end))
+            prev_data_raw = category_tx.loc[prev_mask].copy()
 
             # 对历史数据也应用相同的修复逻辑
-            prev_data_fixed = prepare_sales_data(prev_data)
+            prev_data_fixed = prepare_sales_data(prev_data_raw)
 
             if not prev_data_fixed.empty:
-                prev_summary = prev_data_fixed[prev_data_fixed["Category"].isin(cats)].groupby("Category",
-                                                                                               as_index=False).agg(
+                # 确保只获取指定分类的数据
+                prev_data_filtered = prev_data_fixed[prev_data_fixed["Category"].isin(cats)]
+                prev_summary = prev_data_filtered.groupby("Category", as_index=False).agg(
                     prior_daily_sales=("final_sales", "sum")  # 使用修复后的销售额
                 )
 
+                # 合并前一天数据，确保所有分类都包含
                 summary = summary.merge(prev_summary, on="Category", how="left")
                 summary["prior_daily_sales"] = summary["prior_daily_sales"].fillna(0)
+
+                # 调试总销售额
+                total_prior = summary["prior_daily_sales"].sum()
             else:
                 summary["prior_daily_sales"] = 0
         else:
             summary["prior_daily_sales"] = 0
 
-            # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
+        # === 修改：保留原始 daily_sales 精度，用于 Total 汇总 ===
         summary["daily_sales_raw"] = summary["daily_sales"]  # 保存原始浮点值供后续计算
         MIN_BASE = 50
+
         # === 修正 weekly change ===
-        # detect if the selected period is a single day
-        is_single_day = (start_dt is not None and end_dt is not None and start_dt == end_dt)
+        # 检测是否选择了单日
+        # === 修正 weekly change ===
+        # 检测是否选择了单日
+        is_single_day = (start_dt is not None and end_dt is not None and start_dt.date() == end_dt.date())
 
         if is_single_day:
-            # ✅ Single day logic: use true daily numbers (no aggregation distortion)
+            # ✅ 单日逻辑：使用前一天的数据进行比较 (10.29 vs 10.28)
             summary["weekly_change"] = np.where(
                 summary["prior_daily_sales"] > MIN_BASE,
                 (summary["daily_sales_raw"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"] * 100,
                 np.nan
             )
+
         else:
-            # ✅ Normal period vs period logic
+            # ✅ 正常时间段逻辑：与前一个相同长度时间段比较
             summary["weekly_change"] = np.where(
                 summary["prior_daily_sales"] > MIN_BASE,
                 (summary["daily_sales"] - summary["prior_daily_sales"]) / summary["prior_daily_sales"] * 100,
@@ -782,8 +823,9 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
     # ---------------- Bar table ----------------
     st.markdown("<h4 style='font-size:16px; font-weight:700;'>📊 Bar Categories</h4>", unsafe_allow_html=True)
-    bar_df = time_range_summary(df_filtered_fixed, bar_cats, range_opt, start_date, end_date)
 
+
+    bar_df = time_range_summary(df_filtered_fixed, bar_cats, range_opt, start_date, end_date)
     if not bar_df.empty:
         # 获取Bar分类的前3品牌
         bar_top_items = get_top_items_by_category(items_df, bar_cats, start_date, end_date, for_total=False)
@@ -810,27 +852,32 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
 
         # ✅ format & sort columns for Sum of Daily Sales
         bar_df["_sort_daily_sales"] = bar_df["Sum of Daily Sales"]
-        bar_df["Sum of Daily Sales Display"] = bar_df["Sum of Daily Sales"].apply(lambda x: f"${x:,.0f}")
+        bar_df["Sum of Daily Sales Display"] = bar_df["Sum of Daily Sales"].apply(lambda x: f"${int(x)}")
 
         bar_df = bar_df.sort_values("Sum of Daily Sales", ascending=False)
         # 创建总计行
         total_items_sold = bar_df["Sum of Items Sold"].sum()
-        total_daily_sales = bar_df["Sum of Daily Sales"].sum()
+        # === 修复：使用原始精度计算，不要提前四舍五入 ===
+        total_daily_sales_raw = bar_df["daily_sales_raw"].sum()  # 使用原始浮点值
         total_per_day = bar_df["Per day"].sum()
 
         # 计算Total行的Weekly change - 基于总销售额与前一周期的对比
         total_prior_sales = bar_df["prior_daily_sales"].sum()
         MIN_BASE = 50
         if total_prior_sales > MIN_BASE:
-            total_weekly_change = (total_daily_sales - total_prior_sales) / total_prior_sales * 100  # 乘以100
+            total_weekly_change = (total_daily_sales_raw - total_prior_sales) / total_prior_sales * 100
         else:
             total_weekly_change = np.nan
+
+        # 显示时再四舍五入
+        total_daily_sales = proper_round(total_daily_sales_raw)
+        total_daily_sales_display = f"${total_daily_sales:,.0f}"
 
         # === 创建数据框（与high_level.py相同的格式）- 总计行放在第一行 ===
         bar_summary_data = {
             'Row Labels': ["Total"] + bar_df["Row Labels"].tolist(),
             'Sum of Items Sold': [total_items_sold] + bar_df["Sum of Items Sold"].tolist(),
-            'Sum of Daily Sales': [f"${total_daily_sales:,.0f}"] + bar_df["Sum of Daily Sales Display"].tolist(),
+            'Sum of Daily Sales': [total_daily_sales_display] + bar_df["Sum of Daily Sales Display"].tolist(),
             '_sort_daily_sales': [total_daily_sales] + bar_df["_sort_daily_sales"].tolist(),
 
             'Weekly change': [total_weekly_change] + bar_df["Weekly change"].tolist(),
@@ -844,30 +891,14 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         # 先分离Total行和其他行
         total_row = df_bar_summary[df_bar_summary['Row Labels'] == 'Total']
         other_rows = df_bar_summary[df_bar_summary['Row Labels'] != 'Total']
-
-        # === Sort toggle for Sum of Daily Sales ===
-        sort_opt_bar = st.radio(
-            "Sort by Sum of Daily Sales",
-            options=["Default", "Asc", "Desc"],
-            horizontal=True,
-            key="bar_sort_toggle",
-            label_visibility="collapsed"
+        # 直接按 Weekly change 排序
+        other_rows_sorted = other_rows.sort_values(
+            by='Weekly change',
+            key=lambda x: pd.to_numeric(x, errors='coerce'),
+            ascending=True,
+            na_position='last'
         )
 
-        if sort_opt_bar == "Asc":
-            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=True)
-        elif sort_opt_bar == "Desc":
-            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=False)
-        else:
-            # Default = sort by Weekly change (original behavior)
-            other_rows_sorted = other_rows.sort_values(
-                by='Weekly change',
-                key=lambda x: pd.to_numeric(x, errors='coerce'),
-                ascending=True,
-                na_position='last'
-            )
-
-        # Total 行始终放在最上方
         df_bar_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
 
         # === ✅ 保持等宽且保留自定义列宽 ===
@@ -876,10 +907,10 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         bar_column_config = {
             "Row Labels": st.column_config.Column(width=130),
             "Sum of Items Sold": st.column_config.NumberColumn("Sum of Items Sold", width=110, format="%d"),
-            "Sum of Daily Sales": st.column_config.Column(
+            "Sum of Daily Sales": st.column_config.NumberColumn(  # 改为 NumberColumn
                 "Sum of Daily Net Sales",
                 width=130,
-                disabled=True   # ✅ 禁用列头排序
+                format="%d"  # 去掉千位分隔符，直接显示数字
             ),
             "_sort_daily_sales": st.column_config.NumberColumn("", width=1, format="%d"),
             "Per day": st.column_config.NumberColumn("Per day", width=70, format="%d"),
@@ -1143,14 +1174,9 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         total_per_day = proper_round(retail_df["Per day"].sum())
 
         # === 修复：创建带千位分隔符的显示列和隐藏的排序列 ===
-        retail_df["Sum of Daily Sales Display"] = retail_df["Sum of Daily Sales"].apply(lambda x: f"${x:,.0f}")
+        retail_df["Sum of Daily Sales Display"] = retail_df["Sum of Daily Sales"].apply(lambda x: f"${int(x)}")
         retail_df["_sort_daily_sales"] = retail_df["Sum of Daily Sales"]  # 隐藏的数值列用于排序
-        total_daily_sales_display = f"${total_daily_sales:,.0f}"
-
-        # === 修复：创建带千位分隔符的显示列和隐藏的排序列 ===
-        retail_df["Sum of Daily Sales Display"] = retail_df["Sum of Daily Sales"].apply(lambda x: f"${x:,.0f}")
-        retail_df["_sort_daily_sales"] = retail_df["Sum of Daily Sales"]  # 隐藏的数值列用于排序
-        total_daily_sales_display = f"${total_daily_sales:,.0f}"
+        total_daily_sales_display = f"${int(total_daily_sales)}"
 
         # 创建数据框（与high_level.py相同的格式）- 总计行放在第一行
         retail_summary_data = {
@@ -1167,30 +1193,16 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         df_retail_summary = pd.DataFrame(retail_summary_data)
 
         # === 修正：直接按照Weekly change数值从小到大排序 ===
-        # === Sort toggle for Sum of Daily Sales (Retail) ===
-        sort_opt_retail = st.radio(
-            "Sort by Sum of Daily Sales (Retail)",
-            options=["Default", "Asc", "Desc"],
-            horizontal=True,
-            key="retail_sort_toggle",
-            label_visibility="collapsed"
-        )
-
         total_row = df_retail_summary[df_retail_summary['Row Labels'] == 'Total']
         other_rows = df_retail_summary[df_retail_summary['Row Labels'] != 'Total']
 
-        if sort_opt_retail == "Asc":
-            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=True)
-        elif sort_opt_retail == "Desc":
-            other_rows_sorted = other_rows.sort_values("_sort_daily_sales", ascending=False)
-        else:
-            # Default = Keep your original logic (weekly change sort)
-            other_rows_sorted = other_rows.sort_values(
-                by='Weekly change',
-                key=lambda x: pd.to_numeric(x, errors='coerce'),
-                ascending=True,
-                na_position='last'
-            )
+        # 直接按 Weekly change 排序
+        other_rows_sorted = other_rows.sort_values(
+            by='Weekly change',
+            key=lambda x: pd.to_numeric(x, errors='coerce'),
+            ascending=True,
+            na_position='last'
+        )
 
         # Total 行始终放在最上方
         df_retail_summary_sorted = pd.concat([total_row, other_rows_sorted], ignore_index=True)
@@ -1205,10 +1217,10 @@ def show_sales_report(tx: pd.DataFrame, inv: pd.DataFrame):
         retail_column_config = {
             "Row Labels": st.column_config.Column(width=130),
             "Sum of Items Sold": st.column_config.Column(width=110),
-            "Sum of Daily Sales": st.column_config.TextColumn(  # 改为 TextColumn
-            "Sum of Daily Sales",
+            "Sum of Daily Sales": st.column_config.NumberColumn(  # 改为 NumberColumn
+                "Sum of Daily Sales",
                 width=130,
-                disabled=True
+                format="%d"  # 去掉千位分隔符，直接显示数字
             ),
             "_sort_daily_sales": st.column_config.NumberColumn(
                 "",
