@@ -13,6 +13,8 @@ from init_db import init_db
 import subprocess
 import sys
 from services.ingestion import ingest_from_drive_all
+import platform
+import numpy as np
 
 st.set_page_config(
     page_title="Vie Manly Analytics",
@@ -107,44 +109,30 @@ if st.sidebar.button("🗑️ Clear Database"):
     load_db_cached.clear()
     st.rerun()
 
-# === 重启 & 从 Drive 完整重建数据库 ===
-if st.sidebar.button("🔄 Restart DB from Drive"):
+# === 重启应用按钮 ===
+if st.sidebar.button("🔄 Restart & Reload App"):
     try:
-        import os
-        from services.ingestion import ingest_from_drive_all
-        from init_db import init_db
-
-        st.sidebar.warning("🗑️ Deleting old DB file...")
-
-        # 1️⃣ 删除本地 DB 文件（真正的重置）
-        try:
-            os.remove("manlyfarm.db")
-            st.sidebar.success("✅ Local DB file deleted")
-        except FileNotFoundError:
-            st.sidebar.info("ℹ️ No existing DB file")
-        except Exception as e:
-            st.sidebar.error(f"⚠️ Failed to remove DB file: {e}")
-
-        # 2️⃣ 重新初始化空 DB schema
-        st.sidebar.info("📦 Recreating empty DB schema...")
-        init_db()
-
-        # 3️⃣ 从 Google Drive 下载并导入全部文件（不是 once）
-        st.sidebar.info("☁️ Importing ALL data from Google Drive...")
-        ingest_from_drive_all()
-
-        # 4️⃣ 清理缓存
+        # 1. 清除 Streamlit 缓存
         st.cache_data.clear()
         st.cache_resource.clear()
 
-        st.sidebar.success("✅ Database rebuilt from Google Drive!")
+        # 2. 清空上传状态
+        if "uploaded_file_names" in st.session_state:
+            del st.session_state.uploaded_file_names
 
-        # 5️⃣ 重新加载 DB & 刷新页面
+        # 3. 重新从 Google Drive 导入所有数据（包括新上传的）
+        st.sidebar.info("🔄 Reloading data from Google Drive...")
+        ingest_from_drive_all()
+
+        # 4. 重新加载数据
+        load_db_cached.clear()
+        tx, mem, inv = load_db_cached()
+
+        st.sidebar.success("✅ App restarted with latest data!")
         st.rerun()
 
     except Exception as e:
-        st.sidebar.error(f"❌ Rebuild failed: {e}")
-
+        st.sidebar.error(f"❌ Restart failed: {e}")
 
 # === 单位选择 ===
 st.sidebar.subheader("📏 Units")
