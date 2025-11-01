@@ -108,29 +108,37 @@ if st.sidebar.button("🗑️ Clear Database"):
     st.rerun()
 
 # === 重启应用按钮 ===
-if st.sidebar.button("🔄 Restart & Reload App"):
+if st.sidebar.button("🔄 Restart & Rebuild DB from Drive"):
     try:
-        # 1. 清除 Streamlit 缓存
+        conn = get_db()
+        cur = conn.cursor()
+
+        # 1) 清空 SQLite 表
+        for table in ["transactions", "inventory", "members"]:
+            try:
+                cur.execute(f"DELETE FROM {table}")
+            except:
+                pass
+        conn.commit()
+
+        # 2) 从 Google Drive 重新 ingest 所有文件
+        st.sidebar.info("📥 Rebuilding DB from Google Drive...")
+        ingest_from_drive_all()  # 这一步只是下载文件
+
+        # ✅ 重新 ingest 本地/drive 的文件到 SQLite
+        init_db_from_drive_once()  # 这一句才是“导入文件→建库”
+
+        # 3) 清缓存
         st.cache_data.clear()
         st.cache_resource.clear()
 
-        # 2. 清空上传状态
-        if "uploaded_file_names" in st.session_state:
-            del st.session_state.uploaded_file_names
-
-        # 3. 重新从 Google Drive 导入所有数据（包括新上传的）
-        st.sidebar.info("🔄 Reloading data from Google Drive...")
-        ingest_from_drive_all()
-
-        # 4. 重新加载数据
+        # 4) Reload
         load_db_cached.clear()
-        tx, mem, inv = load_db_cached()
-
-        st.sidebar.success("✅ App restarted with latest data!")
+        st.sidebar.success("✅ DB rebuilt from Drive!")
         st.rerun()
 
     except Exception as e:
-        st.sidebar.error(f"❌ Restart failed: {e}")
+        st.sidebar.error(f"❌ Rebuild failed: {e}")
 
 # === 单位选择 ===
 st.sidebar.subheader("📏 Units")
