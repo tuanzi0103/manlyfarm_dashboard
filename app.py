@@ -107,38 +107,44 @@ if st.sidebar.button("🗑️ Clear Database"):
     load_db_cached.clear()
     st.rerun()
 
-# === 重启应用按钮 ===
-if st.sidebar.button("🔄 Restart & Rebuild DB from Drive"):
+# === 重启 & 从 Drive 完整重建数据库 ===
+if st.sidebar.button("🔄 Restart DB from Drive"):
     try:
-        conn = get_db()
-        cur = conn.cursor()
+        import os
+        from services.ingestion import ingest_from_drive_all
+        from init_db import init_db
 
-        # 1) 清空 SQLite 表
-        for table in ["transactions", "inventory", "members"]:
-            try:
-                cur.execute(f"DELETE FROM {table}")
-            except:
-                pass
-        conn.commit()
+        st.sidebar.warning("🗑️ Deleting old DB file...")
 
-        # 2) 从 Google Drive 重新 ingest 所有文件
-        st.sidebar.info("📥 Rebuilding DB from Google Drive...")
-        ingest_from_drive_all()  # 这一步只是下载文件
+        # 1️⃣ 删除本地 DB 文件（真正的重置）
+        try:
+            os.remove("manlyfarm.db")
+            st.sidebar.success("✅ Local DB file deleted")
+        except FileNotFoundError:
+            st.sidebar.info("ℹ️ No existing DB file")
+        except Exception as e:
+            st.sidebar.error(f"⚠️ Failed to remove DB file: {e}")
 
-        # ✅ 重新 ingest 本地/drive 的文件到 SQLite
-        init_db_from_drive_once()  # 这一句才是“导入文件→建库”
+        # 2️⃣ 重新初始化空 DB schema
+        st.sidebar.info("📦 Recreating empty DB schema...")
+        init_db()
 
-        # 3) 清缓存
+        # 3️⃣ 从 Google Drive 下载并导入全部文件（不是 once）
+        st.sidebar.info("☁️ Importing ALL data from Google Drive...")
+        ingest_from_drive_all()
+
+        # 4️⃣ 清理缓存
         st.cache_data.clear()
         st.cache_resource.clear()
 
-        # 4) Reload
-        load_db_cached.clear()
-        st.sidebar.success("✅ DB rebuilt from Drive!")
+        st.sidebar.success("✅ Database rebuilt from Google Drive!")
+
+        # 5️⃣ 重新加载 DB & 刷新页面
         st.rerun()
 
     except Exception as e:
         st.sidebar.error(f"❌ Rebuild failed: {e}")
+
 
 # === 单位选择 ===
 st.sidebar.subheader("📏 Units")
